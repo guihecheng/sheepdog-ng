@@ -227,6 +227,11 @@ AC_ARG_ENABLE([zookeeper],
 	[ enable_zookeeper="no" ],)
 AM_CONDITIONAL(BUILD_ZOOKEEPER, test x$enable_zookeeper = xyes)
 
+AC_ARG_ENABLE([etcd],
+	[  --enable-etcd           : build etcd cluster driver ],,
+	[ enable_etcd="no" ],)
+AM_CONDITIONAL(BUILD_ETCD, test x$enable_etcd = xyes)
+
 AC_ARG_ENABLE([shepherd],
 	[  --enable-shepherd       : build shepherd cluster driver ],,
 	[ enable_shepherd="no" ],)
@@ -357,6 +362,15 @@ if test "x${enable_zookeeper}" = xyes; then
 		AC_MSG_ERROR(zookeeper.h header missing))
 	AC_DEFINE_UNQUOTED([HAVE_ZOOKEEPER], 1, [have zookeeper])
 	PACKAGE_FEATURES="$PACKAGE_FEATURES zookeeper"
+fi
+
+if test "x${enable_etcd}" = xyes; then
+	AC_CHECK_LIB([cetcd], [cetcd_client_init],,
+		AC_MSG_ERROR(libcetcd not found))
+	AC_CHECK_HEADERS([cetcd.h],,
+		AC_MSG_ERROR(cetcd.h header missing))
+	AC_DEFINE_UNQUOTED([HAVE_ETCD], 1, [have etcd])
+	PACKAGE_FEATURES="$PACKAGE_FEATURES etcd"
 fi
 
 if test "x${enable_shepherd}" = xyes; then
