@@ -61,7 +61,7 @@ static uatomic_bool stop;
 static uatomic_bool is_master;
 static int my_master_seq;
 static struct sd_rw_lock etcd_compete_master_lock = SD_RW_LOCK_INITIALIZER;
-static bool joined;
+static bool joined = false;
 static bool first_push = true;
 
 static cetcd_client etcd_cli;
@@ -835,7 +835,9 @@ static int etcd_join(const struct sd_node* myself, void* opaque,
 static int etcd_leave(void) {
     int ret;
     char path[MAX_NODE_STR_LEN];
+    char queue_pos_path[MAX_NODE_STR_LEN];
     cetcd_response* resp;
+    struct epher_key *k, *member_k = NULL, *queue_pos_k = NULL;
 
     sd_info("leaving cluster");
     uatomic_set_true(&stop);
@@ -849,10 +851,25 @@ static int etcd_leave(void) {
     // add leave event
     ret = add_event(EVENT_LEAVE, &this_node, NULL, 0);
 
-    // delete member node
+    // delete member node & queue_pos_path
     snprintf(path, sizeof(path), MEMBER_DIR "/%s", node_to_str(&this_node.node));
     resp = cetcd_delete(&etcd_cli, path);
 
+    snprintf(queue_pos_path, sizeof(queue_pos_path), MEMBER_QUEUE_POS_DIR "/%s", node_to_str(&this_node.node));
+    resp = cetcd_delete(&etcd_cli, queue_pos_path);
+
+    // stop refreshing me
+    sd_write_lock(&epher_key_lock);
+    list_for_each_entry (k, &epher_key_list, list) {
+        if (!strcmp(k->key, path)) {
+            member_k = k;
+        } else if (!strcmp(k->key, queue_pos_path)) {
+            queue_pos_k = k;
+        }
+    }
+    if (member_k) list_del(&member_k->list);
+    if (queue_pos_k) list_del(&queue_pos_k->list);
+    sd_rw_unlock(&epher_key_lock);
     return 0;
 }
 
