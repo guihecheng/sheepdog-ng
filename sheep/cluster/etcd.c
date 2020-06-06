@@ -259,6 +259,9 @@ static void etcd_compete_master(void) {
         snprintf(path, sizeof(path), "%s/", MASTER_DIR);
 
         resp = cetcd_create_in_order(&etcd_cli, path, (char*)node_to_str(&this_node.node), EPHERMERAL_TTL);
+        if (resp->err) {
+            sd_err("create in order node under %s failed.", path);
+        }
 
         snprintf(my_compete_path, sizeof(my_compete_path), "%s", resp->node->key);
         sscanf(resp->node->key, MASTER_DIR "/%"PRId32, &my_seq);
@@ -322,6 +325,9 @@ static int etcd_queue_push(struct etcd_event* ev) {
     snprintf(path, sizeof(path), "%s/", QUEUE_DIR);
 
     resp = cetcd_create_in_order(&etcd_cli, path, (char*)ev, PERSISTENT_TTL);
+    if (resp->err) {
+        sd_err("create in order node under %s failed.", path);
+    }
 
     if (first_push) {
         // uint64_t ?
@@ -367,6 +373,9 @@ static int etcd_queue_pop_advance(struct etcd_event* ev) {
     snprintf(path, sizeof(path), QUEUE_DIR "%010"PRId32, this_queue_pos);
 
     resp = cetcd_get(&etcd_cli, path);
+    if (resp->err) {
+        sd_err("get path %s failed.", path);
+    }
 
     sd_debug("%s, type:%d, len:%d, pos:%" PRId32, path, ev->type, len, this_queue_pos);
 
@@ -490,25 +499,39 @@ static int prepare_store(void) {
     cetcd_response* resp;
 
     resp = cetcd_setdir(&etcd_cli, DEFAULT_BASE, PERSISTENT_TTL);
-
+    if (resp->err) {
+        ret = -1;
+        goto out;
+    }
     cetcd_response_release(resp);
 
     resp = cetcd_setdir(&etcd_cli, QUEUE_DIR, PERSISTENT_TTL);
-
+    if (resp->err) {
+        ret = -1;
+        goto out;
+    }
     cetcd_response_release(resp);
 
     resp = cetcd_setdir(&etcd_cli, MEMBER_QUEUE_POS_DIR, PERSISTENT_TTL);
-
+    if (resp->err) {
+        ret = -1;
+        goto out;
+    }
     cetcd_response_release(resp);
 
     resp = cetcd_setdir(&etcd_cli, MEMBER_DIR, PERSISTENT_TTL);
-
+    if (resp->err) {
+        ret = -1;
+        goto out;
+    }
     cetcd_response_release(resp);
 
     resp = cetcd_setdir(&etcd_cli, MASTER_DIR, PERSISTENT_TTL);
-
+    if (resp->err) {
+        ret = -1;
+    }
+out:
     cetcd_response_release(resp);
-
     return ret;
 }
 
@@ -609,6 +632,9 @@ static int push_join_response(struct etcd_event* ev) {
     snprintf(path, sizeof(path), QUEUE_DIR "/%010"PRId32, this_queue_pos);
 
     resp = cetcd_set(&etcd_cli, path, (char*)ev, PERSISTENT_TTL);
+    if (resp->err) {
+        sd_err("get path %s failed.", path);
+    }
 
     cetcd_response_release(resp);
     sd_debug("update path:%s, queue_pos%010" PRId32 ", len:%d", path, this_queue_pos, len);
@@ -664,12 +690,16 @@ static void etcd_handle_accept(struct etcd_event* ev) {
         joined = true;
         sd_debug("create path:%s",  path);
         resp = cetcd_set(&etcd_cli, path, (char*)connect_option, EPHERMERAL_TTL);
-
+        if (resp->err) {
+            sd_err("create path:%s failed.", path);
+        }
         cetcd_response_release(resp);
 
-        sd_debug("create path:%s",  queue_pos_path);
+        sd_debug("create path:%s", queue_pos_path);
         resp = cetcd_set(&etcd_cli, path, (char*)&pos, EPHERMERAL_TTL);
-
+        if (resp->err) {
+            sd_err("create path:%s failed.", queue_pos_path);
+        }
         cetcd_response_release(resp);
 
         struct epher_key* member_key = xzalloc(sizeof(struct epher_key));
@@ -820,19 +850,35 @@ static int etcd_init(const char* option) {
 
     // init store structures
     ret = prepare_store();
+    if (ret) {
+        sd_err("prepare store failed.");
+        goto out;
+    }
 
     // setup watchers
     ret = prepare_watchers();
+    if (ret) {
+        sd_err("prepare watchers failed.");
+        goto out;
+    }
 
     // heartbeat ephermeral nodes
     ret = prepare_refresher();
+    if (ret) {
+        sd_err("prepare refresher failed.");
+        goto out;
+    }
 
     uatomic_set_false(&stop);
     uatomic_set_false(&is_master);
 
     // register event
     ret = register_event_handler();
+    if (ret) {
+        sd_err("prepare refresher failed.");
+    }
 
+out:
     return ret;
 }
 
@@ -864,6 +910,9 @@ static int etcd_join(const struct sd_node* myself, void* opaque,
 
     // add join event
     ret = add_join_event(opaque, opaque_len);
+    if (ret) {
+        sd_err("add join event failed.");
+    }
     return ret;
 }
 
@@ -881,21 +930,32 @@ static int etcd_leave(void) {
     if (uatomic_is_true(&is_master)) {
         snprintf(path, sizeof(path), MASTER_DIR "/%010"PRId32, my_master_seq);
         resp = cetcd_delete(&etcd_cli, path);
-
+        if (resp->err) {
+            sd_warn("delete %s failed.", path);
+        }
         cetcd_response_release(resp);
     }
 
     // add leave event
     ret = add_event(EVENT_LEAVE, &this_node, NULL, 0);
+    if (ret) {
+        sd_err("add leave event failed.");
+    }
 
     // delete member node & queue_pos_path
     snprintf(path, sizeof(path), MEMBER_DIR "/%s", node_to_str(&this_node.node));
     resp = cetcd_delete(&etcd_cli, path);
+    if (resp->err) {
+        sd_warn("delete %s failed.", path);
+    }
 
     cetcd_response_release(resp);
 
     snprintf(queue_pos_path, sizeof(queue_pos_path), MEMBER_QUEUE_POS_DIR "/%s", node_to_str(&this_node.node));
     resp = cetcd_delete(&etcd_cli, queue_pos_path);
+    if (resp->err) {
+        sd_warn("delete %s failed.", queue_pos_path);
+    }
 
     cetcd_response_release(resp);
 
