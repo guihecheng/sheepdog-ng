@@ -67,6 +67,7 @@ static bool first_push = true;
 static cetcd_client etcd_cli;
 static char connect_option[MAX_NODE_STR_LEN];
 static cetcd_watch_id wid;
+static cetcd_array watchers;
 static int efd;
 static struct etcd_node this_node;
 static int32_t this_queue_pos;
@@ -147,6 +148,7 @@ static void refresh_ttl(void* arg) {
     sd_read_lock(&epher_key_lock);
     list_for_each_entry (k, &epher_key_list, list) {
         resp = cetcd_update(&etcd_cli, k->key, NULL, EPHERMERAL_TTL, 1);
+        cetcd_response_release(resp);
     }
     sd_rw_unlock(&epher_key_lock);
 
@@ -160,11 +162,13 @@ static int etcd_get_least_seq(const char* parent, char* least_seq_path,
 
     resp = cetcd_lsdir(&etcd_cli, parent, 1, 0);
     if (resp->err) {
+        cetcd_response_release(resp);
         return -1;
     }
     n = cetcd_array_get(resp->node->nodes, 0);
     snprintf(least_seq_path, MAX_NODE_STR_LEN, "%s", n->key);
     snprintf(least_seq_path, MAX_NODE_STR_LEN, "%s", n->value);
+    cetcd_response_release(resp);
 
     return 0;
 }
@@ -186,12 +190,14 @@ static int etcd_find_master(int* master_seq, char* master_name) {
         resp = cetcd_get(&etcd_cli, master_compete_path);
         if (resp->err) {
             sd_info("detect master leave, start to compete master");
+            cetcd_response_release(resp);
             (*master_seq)++;
         } else {
             snprintf(master_name, MAX_NODE_STR_LEN, "%s", resp->node->value);
             break;
         }
     }
+    cetcd_response_release(resp);
 
     return ret;
 }
@@ -205,23 +211,27 @@ static int etcd_verify_last_sheep_join(int seq, int* last_sheep) {
         snprintf(path, MAX_NODE_STR_LEN, MASTER_DIR "/%010"PRId32, *last_sheep);
         resp = cetcd_get(&etcd_cli, path);
         if (resp->err) {
+            cetcd_response_release(resp);
             continue;
         }
 
         snprintf(name, MAX_NODE_STR_LEN, "%s", resp->node->value);
 
         if (!strcmp(name, node_to_str(&this_node.node))) {
+            cetcd_response_release(resp);
             continue;
         }
 
         snprintf(path, MAX_NODE_STR_LEN, MEMBER_DIR "/%s", name);
         resp = cetcd_get(&etcd_cli, path);
         if (resp->err) {
+            cetcd_response_release(resp);
             (*last_sheep)++;
         } else {
             break;
         }
     }
+    cetcd_response_release(resp);
 
     return ret;
 }
@@ -260,6 +270,8 @@ static void etcd_compete_master(void) {
         sd_write_lock(&epher_key_lock);
         list_add_tail(&master_key->list, &epher_key_list);
         sd_rw_unlock(&epher_key_lock);
+
+        cetcd_response_release(resp);
     }
 
     // check winner
@@ -320,6 +332,7 @@ static int etcd_queue_push(struct etcd_event* ev) {
         first_push = false;
     }
 
+    cetcd_response_release(resp);
     sd_debug("create path%s, queue_pos:%010" PRId32 ", len:%d", buf, this_queue_pos, len);
 
     return 0;
@@ -338,6 +351,7 @@ static int etcd_queue_peek(bool* peek) {
     } else {
         *peek = true;
     }
+    cetcd_response_release(resp);
 
     return ret;
 }
@@ -362,10 +376,12 @@ static int etcd_queue_pop_advance(struct etcd_event* ev) {
         snprintf(queue_pos_path, sizeof(queue_pos_path),
                 MEMBER_QUEUE_POS_DIR"/%s", node_to_str(&this_node.node));
 
+        cetcd_response_release(resp);
         resp = cetcd_set(&etcd_cli, queue_pos_path, (char*)&this_queue_pos, PERSISTENT_TTL);
 
         sd_debug("update queue pos %s to pos %" PRId32, queue_pos_path, this_queue_pos);
     }
+    cetcd_response_release(resp);
 
     this_queue_pos++;
     return ret;
@@ -382,6 +398,7 @@ static int etcd_queue_find(uint64_t id, char* seq_path, int seq_path_len,
 
         resp = cetcd_get(&etcd_cli, seq_path);
         if (resp->err) {
+            cetcd_response_release(resp);
             sd_debug("id %"PRIx64" is not found", id);
             *found = false;
             return ret;
@@ -393,6 +410,7 @@ static int etcd_queue_find(uint64_t id, char* seq_path, int seq_path_len,
                 return ret;
             }
         }
+        cetcd_response_release(resp);
     }
 
     return ret;
@@ -462,6 +480,7 @@ static int connect_etcd(const char* option) {
     }
 
     cetcd_client_init(&etcd_cli, &addrs);
+    cetcd_array_destroy(&addrs);
 
     return ret;
 }
@@ -472,13 +491,23 @@ static int prepare_store(void) {
 
     resp = cetcd_setdir(&etcd_cli, DEFAULT_BASE, PERSISTENT_TTL);
 
+    cetcd_response_release(resp);
+
     resp = cetcd_setdir(&etcd_cli, QUEUE_DIR, PERSISTENT_TTL);
+
+    cetcd_response_release(resp);
 
     resp = cetcd_setdir(&etcd_cli, MEMBER_QUEUE_POS_DIR, PERSISTENT_TTL);
 
+    cetcd_response_release(resp);
+
     resp = cetcd_setdir(&etcd_cli, MEMBER_DIR, PERSISTENT_TTL);
 
+    cetcd_response_release(resp);
+
     resp = cetcd_setdir(&etcd_cli, MASTER_DIR, PERSISTENT_TTL);
+
+    cetcd_response_release(resp);
 
     return ret;
 }
@@ -533,8 +562,6 @@ static int etcd_watcher(void* data, cetcd_response* resp) {
 
 static int prepare_watchers(void) {
     int ret = 0;
-    cetcd_response* resp;
-    cetcd_array watchers;
 
     cetcd_array_init(&watchers, 3);
 
@@ -583,6 +610,7 @@ static int push_join_response(struct etcd_event* ev) {
 
     resp = cetcd_set(&etcd_cli, path, (char*)ev, PERSISTENT_TTL);
 
+    cetcd_response_release(resp);
     sd_debug("update path:%s, queue_pos%010" PRId32 ", len:%d", path, this_queue_pos, len);
 
     return 0;
@@ -637,8 +665,12 @@ static void etcd_handle_accept(struct etcd_event* ev) {
         sd_debug("create path:%s",  path);
         resp = cetcd_set(&etcd_cli, path, (char*)connect_option, EPHERMERAL_TTL);
 
+        cetcd_response_release(resp);
+
         sd_debug("create path:%s",  queue_pos_path);
         resp = cetcd_set(&etcd_cli, path, (char*)&pos, EPHERMERAL_TTL);
+
+        cetcd_response_release(resp);
 
         struct epher_key* member_key = xzalloc(sizeof(struct epher_key));
         struct epher_key* queue_pos_key = xzalloc(sizeof(struct epher_key));
@@ -824,6 +856,9 @@ static int etcd_join(const struct sd_node* myself, void* opaque,
         exit(1);
     }
 
+    cetcd_response_release(resp1);
+    cetcd_response_release(resp2);
+
     // compete master
     etcd_compete_master();
 
@@ -846,6 +881,8 @@ static int etcd_leave(void) {
     if (uatomic_is_true(&is_master)) {
         snprintf(path, sizeof(path), MASTER_DIR "/%010"PRId32, my_master_seq);
         resp = cetcd_delete(&etcd_cli, path);
+
+        cetcd_response_release(resp);
     }
 
     // add leave event
@@ -855,8 +892,12 @@ static int etcd_leave(void) {
     snprintf(path, sizeof(path), MEMBER_DIR "/%s", node_to_str(&this_node.node));
     resp = cetcd_delete(&etcd_cli, path);
 
+    cetcd_response_release(resp);
+
     snprintf(queue_pos_path, sizeof(queue_pos_path), MEMBER_QUEUE_POS_DIR "/%s", node_to_str(&this_node.node));
     resp = cetcd_delete(&etcd_cli, queue_pos_path);
+
+    cetcd_response_release(resp);
 
     // stop refreshing me
     sd_write_lock(&epher_key_lock);
