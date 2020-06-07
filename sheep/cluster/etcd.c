@@ -65,7 +65,7 @@ static bool joined = false;
 static bool first_push = true;
 
 static cetcd_client etcd_cli;
-static char connect_option[MAX_NODE_STR_LEN];
+static char connect_option[PATH_MAX];
 static cetcd_watch_id wid;
 static cetcd_array watchers;
 static int efd;
@@ -166,8 +166,8 @@ static int etcd_get_least_seq(const char* parent, char* least_seq_path,
         return -1;
     }
     n = cetcd_array_get(resp->node->nodes, 0);
-    snprintf(least_seq_path, MAX_NODE_STR_LEN, "%s", n->key);
-    snprintf(least_seq_path, MAX_NODE_STR_LEN, "%s", n->value);
+    snprintf(least_seq_path, PATH_MAX, "%s", n->key);
+    snprintf(least_seq_path, PATH_MAX, "%s", n->value);
     cetcd_response_release(resp);
 
     return 0;
@@ -175,7 +175,7 @@ static int etcd_get_least_seq(const char* parent, char* least_seq_path,
 
 static int etcd_find_master(int* master_seq, char* master_name) {
     int ret = 0;
-    char master_compete_path[MAX_NODE_STR_LEN];
+    char master_compete_path[PATH_MAX];
     cetcd_response* resp;
 
     if (*master_seq < 0) {
@@ -185,7 +185,7 @@ static int etcd_find_master(int* master_seq, char* master_name) {
     }
 
     while (true) {
-        snprintf(master_compete_path, MAX_NODE_STR_LEN,
+        snprintf(master_compete_path, PATH_MAX,
                  MASTER_DIR "/%010"PRId32, *master_seq);
         resp = cetcd_get(&etcd_cli, master_compete_path);
         if (resp->err) {
@@ -193,7 +193,7 @@ static int etcd_find_master(int* master_seq, char* master_name) {
             cetcd_response_release(resp);
             (*master_seq)++;
         } else {
-            snprintf(master_name, MAX_NODE_STR_LEN, "%s", resp->node->value);
+            snprintf(master_name, PATH_MAX, "%s", resp->node->value);
             break;
         }
     }
@@ -204,25 +204,25 @@ static int etcd_find_master(int* master_seq, char* master_name) {
 
 static int etcd_verify_last_sheep_join(int seq, int* last_sheep) {
     int ret = 0;
-    char path[MAX_NODE_STR_LEN], name[MAX_NODE_STR_LEN];
+    char path[PATH_MAX], name[MAX_NODE_STR_LEN];
     cetcd_response* resp;
 
     for (*last_sheep = seq-1; *last_sheep >= 0; (*last_sheep)--) {
-        snprintf(path, MAX_NODE_STR_LEN, MASTER_DIR "/%010"PRId32, *last_sheep);
+        snprintf(path, PATH_MAX, MASTER_DIR "/%010"PRId32, *last_sheep);
         resp = cetcd_get(&etcd_cli, path);
         if (resp->err) {
             cetcd_response_release(resp);
             continue;
         }
 
-        snprintf(name, MAX_NODE_STR_LEN, "%s", resp->node->value);
+        snprintf(name, PATH_MAX, "%s", resp->node->value);
 
         if (!strcmp(name, node_to_str(&this_node.node))) {
             cetcd_response_release(resp);
             continue;
         }
 
-        snprintf(path, MAX_NODE_STR_LEN, MEMBER_DIR "/%s", name);
+        snprintf(path, PATH_MAX, MEMBER_DIR "/%s", name);
         resp = cetcd_get(&etcd_cli, path);
         if (resp->err) {
             cetcd_response_release(resp);
@@ -239,9 +239,9 @@ static int etcd_verify_last_sheep_join(int seq, int* last_sheep) {
 static void etcd_compete_master(void) {
     int ret;
     int last_joined_sheep;
-    char path[MAX_NODE_STR_LEN];
-    char master_name[MAX_NODE_STR_LEN];
-    char my_compete_path[MAX_NODE_STR_LEN];
+    char path[PATH_MAX];
+    char master_name[PATH_MAX];
+    char my_compete_path[PATH_MAX];
     static int master_seq = -1;
     static int my_seq;
     cetcd_response* resp;
@@ -316,8 +316,8 @@ out_unlock:
 }
 
 static int etcd_queue_push(struct etcd_event* ev) {
-    int ret, len;
-    char path[MAX_NODE_STR_LEN], buf[MAX_NODE_STR_LEN];
+    int len;
+    char path[PATH_MAX], buf[MAX_NODE_STR_LEN];
     cetcd_response* resp;
 
     // use the len of the whole struct ?
@@ -346,7 +346,7 @@ static int etcd_queue_push(struct etcd_event* ev) {
 
 static int etcd_queue_peek(bool* peek) {
     int ret = 0;
-    char path[MAX_NODE_STR_LEN];
+    char path[PATH_MAX];
     cetcd_response* resp;
 
     snprintf(path, sizeof(path), QUEUE_DIR "/%010"PRId32, this_queue_pos);
@@ -365,8 +365,8 @@ static int etcd_queue_peek(bool* peek) {
 static int etcd_queue_pop_advance(struct etcd_event* ev) {
     int ret = 0;
     int len;
-    char path[MAX_NODE_STR_LEN];
-    char queue_pos_path[MAX_NODE_STR_LEN];
+    char path[PATH_MAX];
+    char queue_pos_path[PATH_MAX];
     cetcd_response* resp;
 
     len = sizeof(*ev);
@@ -452,6 +452,9 @@ static int add_event(enum etcd_event_type type, struct etcd_node* enode,
     }
 
     ret = etcd_queue_push(&ev);
+    if (ret) {
+        sd_err("etcd queue push failed.");
+    }
 
     return SD_RES_SUCCESS;
 }
@@ -537,7 +540,7 @@ out:
 
 static int etcd_watcher(void* data, cetcd_response* resp) {
     int action = resp->action;
-    char str[MAX_NODE_STR_LEN];
+    char str[PATH_MAX];
     int ret;
     struct etcd_node enode;
     struct etcd_node *n;
@@ -615,7 +618,7 @@ static void* etcd_event_sd_nodes(struct etcd_event* ev) {
 
 // join event -> accept event
 static int push_join_response(struct etcd_event* ev) {
-    char path[MAX_NODE_STR_LEN];
+    char path[PATH_MAX];
     struct sd_node* n;
     struct sd_node* np = etcd_event_sd_nodes(ev);
     int len;
@@ -669,10 +672,9 @@ static void init_node_list(struct etcd_event* ev) {
 }
 
 static void etcd_handle_accept(struct etcd_event* ev) {
-    char path[MAX_NODE_STR_LEN];
-    char queue_pos_path[MAX_NODE_STR_LEN];
+    char path[PATH_MAX];
+    char queue_pos_path[PATH_MAX];
     uint32_t pos = -1;
-    int ret;
     cetcd_response* resp;
 
     sd_debug("ACCEPT");
@@ -807,11 +809,16 @@ static void etcd_event_handler(int listen_fd, int events, void* data) {
     eventfd_xread(efd);
 
     ret = etcd_queue_peek(&peek);
-    if (!peek) {
+    if (ret || !peek) {
+        sd_err("etcd queue peek failed.");
         return;
     }
 
     ret = etcd_queue_pop_advance(&ev);
+    if (ret) {
+        sd_err("etcd queue pop advance failed.");
+        return;
+    }
     if (ev.type < 0 || ev.type > etcd_max_event_handlers
      || !etcd_event_handlers[ev.type]) {
         panic("unhandled type %d", ev.type);
@@ -845,7 +852,7 @@ static int etcd_init(const char* option) {
     }
 
     // create etcd client
-    snprintf(connect_option, MAX_NODE_STR_LEN, "%s", option);
+    snprintf(connect_option, PATH_MAX, "%s", option);
     ret = connect_etcd(option);
 
     // init store structures
@@ -885,7 +892,7 @@ out:
 static int etcd_join(const struct sd_node* myself, void* opaque,
                      size_t opaque_len) {
     int ret;
-    char path[MAX_NODE_STR_LEN];
+    char path[PATH_MAX];
     cetcd_response *resp1, *resp2;
 
     // check exist
@@ -918,8 +925,8 @@ static int etcd_join(const struct sd_node* myself, void* opaque,
 
 static int etcd_leave(void) {
     int ret;
-    char path[MAX_NODE_STR_LEN];
-    char queue_pos_path[MAX_NODE_STR_LEN];
+    char path[PATH_MAX];
+    char queue_pos_path[PATH_MAX];
     cetcd_response* resp;
     struct epher_key *k, *member_k = NULL, *queue_pos_k = NULL;
 
