@@ -908,7 +908,7 @@ static int etcd_join(const struct sd_node* myself, void* opaque,
     snprintf(path, sizeof(path), MEMBER_QUEUE_POS_DIR "/%s", node_to_str(myself));
     resp2 = cetcd_get(&etcd_cli, path);
 
-    if (resp1->err || resp2->err) {
+    if (!resp1->err || !resp2->err) {
         sd_err("shoot myself.");
         exit(1);
     }
