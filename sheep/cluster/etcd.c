@@ -854,6 +854,10 @@ static int etcd_init(const char* option) {
     // create etcd client
     snprintf(connect_option, PATH_MAX, "%s", option);
     ret = connect_etcd(option);
+    if (ret) {
+        sd_err("connect etcd failed.");
+        goto out;
+    }
 
     // init store structures
     ret = prepare_store();
