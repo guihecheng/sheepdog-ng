@@ -167,7 +167,7 @@ static int etcd_get_least_seq(const char* parent, char* least_seq_path,
     }
     n = cetcd_array_get(resp->node->nodes, 0);
     snprintf(least_seq_path, PATH_MAX, "%s", n->key);
-    snprintf(least_seq_path, PATH_MAX, "%s", n->value);
+    snprintf(buf, PATH_MAX, "%s", n->value);
     cetcd_response_release(resp);
 
     return 0;
@@ -180,6 +180,7 @@ static int etcd_find_master(int* master_seq, char* master_name) {
 
     if (*master_seq < 0) {
         ret = etcd_get_least_seq(MASTER_DIR, master_compete_path, master_name);
+        sd_debug("get least seq: %s name: %s", master_compete_path, master_name);
         sscanf(master_compete_path, MASTER_DIR "/%"PRId32, master_seq);
         return 0;
     }
@@ -279,7 +280,7 @@ static void etcd_compete_master(void) {
 
     // check winner
     ret = etcd_find_master(&master_seq, master_name);
-    if (!ret) {
+    if (ret) {
         goto out_unlock;
     }
 
@@ -502,37 +503,23 @@ static int prepare_store(void) {
     cetcd_response* resp;
 
     resp = cetcd_setdir(&etcd_cli, DEFAULT_BASE, PERSISTENT_TTL);
-    if (resp->err) {
-        ret = -1;
-        goto out;
-    }
+
     cetcd_response_release(resp);
 
     resp = cetcd_setdir(&etcd_cli, QUEUE_DIR, PERSISTENT_TTL);
-    if (resp->err) {
-        ret = -1;
-        goto out;
-    }
+
     cetcd_response_release(resp);
 
     resp = cetcd_setdir(&etcd_cli, MEMBER_QUEUE_POS_DIR, PERSISTENT_TTL);
-    if (resp->err) {
-        ret = -1;
-        goto out;
-    }
+
     cetcd_response_release(resp);
 
     resp = cetcd_setdir(&etcd_cli, MEMBER_DIR, PERSISTENT_TTL);
-    if (resp->err) {
-        ret = -1;
-        goto out;
-    }
+
     cetcd_response_release(resp);
 
     resp = cetcd_setdir(&etcd_cli, MASTER_DIR, PERSISTENT_TTL);
-    if (resp->err) {
-        ret = -1;
-    }
+
 out:
     cetcd_response_release(resp);
     return ret;
@@ -810,7 +797,6 @@ static void etcd_event_handler(int listen_fd, int events, void* data) {
 
     ret = etcd_queue_peek(&peek);
     if (ret || !peek) {
-        sd_err("etcd queue peek failed.");
         return;
     }
 
