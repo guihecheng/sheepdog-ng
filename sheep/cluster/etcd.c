@@ -187,7 +187,7 @@ static int etcd_find_master(int* master_seq, char* master_name) {
 
     while (true) {
         snprintf(master_compete_path, PATH_MAX,
-                 MASTER_DIR "/%010"PRId32, *master_seq);
+                 MASTER_DIR "/%020"PRId32, *master_seq);
         resp = cetcd_get(&etcd_cli, master_compete_path);
         if (resp->err) {
             sd_info("detect master leave, start to compete master");
@@ -209,7 +209,7 @@ static int etcd_verify_last_sheep_join(int seq, int* last_sheep) {
     cetcd_response* resp;
 
     for (*last_sheep = seq-1; *last_sheep >= 0; (*last_sheep)--) {
-        snprintf(path, PATH_MAX, MASTER_DIR "/%010"PRId32, *last_sheep);
+        snprintf(path, PATH_MAX, MASTER_DIR "/%020"PRId32, *last_sheep);
         resp = cetcd_get(&etcd_cli, path);
         if (resp->err) {
             cetcd_response_release(resp);
@@ -322,7 +322,8 @@ static int etcd_queue_push(struct etcd_event* ev) {
     cetcd_response* resp;
 
     // use the len of the whole struct ?
-    len = offsetof(typeof(*ev), buf) + ev->buf_len;
+    //len = offsetof(typeof(*ev), buf) + ev->buf_len;
+    len = sizeof(*ev);
     snprintf(path, sizeof(path), "%s/", QUEUE_DIR);
 
     resp = cetcd_create_in_order(&etcd_cli, path, (char*)ev, PERSISTENT_TTL);
@@ -333,6 +334,7 @@ static int etcd_queue_push(struct etcd_event* ev) {
     if (first_push) {
         // uint64_t ?
         int32_t seq;
+        snprintf(buf, sizeof(buf), "%s", resp->node->key);
         sscanf(resp->node->key, QUEUE_DIR "/%"PRId32, &seq);
         this_queue_pos = seq;
         eventfd_xwrite(efd, 1);
@@ -340,7 +342,7 @@ static int etcd_queue_push(struct etcd_event* ev) {
     }
 
     cetcd_response_release(resp);
-    sd_debug("create path%s, queue_pos:%010" PRId32 ", len:%d", buf, this_queue_pos, len);
+    sd_debug("create path: %s, queue_pos:%020" PRId32 ", len:%d", buf, this_queue_pos, len);
 
     return 0;
 }
@@ -350,7 +352,7 @@ static int etcd_queue_peek(bool* peek) {
     char path[PATH_MAX];
     cetcd_response* resp;
 
-    snprintf(path, sizeof(path), QUEUE_DIR "/%010"PRId32, this_queue_pos);
+    snprintf(path, sizeof(path), QUEUE_DIR "/%020"PRId32, this_queue_pos);
 
     resp = cetcd_get(&etcd_cli, path);
     if (resp->err) {
@@ -371,13 +373,17 @@ static int etcd_queue_pop_advance(struct etcd_event* ev) {
     cetcd_response* resp;
 
     len = sizeof(*ev);
-    snprintf(path, sizeof(path), QUEUE_DIR "%010"PRId32, this_queue_pos);
+    snprintf(path, sizeof(path), QUEUE_DIR "/%020"PRId32, this_queue_pos);
 
     resp = cetcd_get(&etcd_cli, path);
     if (resp->err) {
         sd_err("get path %s failed.", path);
+        cetcd_response_release(resp);
+        return -1;
     }
 
+    sd_debug("node->value len: %d", strlen(resp->node->value));
+    memcpy(ev, resp->node->value, len);
     sd_debug("%s, type:%d, len:%d, pos:%" PRId32, path, ev->type, len, this_queue_pos);
 
     if (this_queue_pos % QUEUE_DEL_BATCH == 0
@@ -404,7 +410,7 @@ static int etcd_queue_find(uint64_t id, char* seq_path, int seq_path_len,
 
     for (int seq = this_queue_pos; ; seq++) {
         struct etcd_event* ev;
-        snprintf(seq_path, seq_path_len, QUEUE_DIR"/%010"PRId32, seq);
+        snprintf(seq_path, seq_path_len, QUEUE_DIR"/%020"PRId32, seq);
 
         resp = cetcd_get(&etcd_cli, seq_path);
         if (resp->err) {
@@ -619,7 +625,7 @@ static int push_join_response(struct etcd_event* ev) {
     this_queue_pos--;
 
     len = offsetof(typeof(*ev), buf) + ev->buf_len;
-    snprintf(path, sizeof(path), QUEUE_DIR "/%010"PRId32, this_queue_pos);
+    snprintf(path, sizeof(path), QUEUE_DIR "/%020"PRId32, this_queue_pos);
 
     resp = cetcd_set(&etcd_cli, path, (char*)ev, PERSISTENT_TTL);
     if (resp->err) {
@@ -627,7 +633,7 @@ static int push_join_response(struct etcd_event* ev) {
     }
 
     cetcd_response_release(resp);
-    sd_debug("update path:%s, queue_pos%010" PRId32 ", len:%d", path, this_queue_pos, len);
+    sd_debug("update path:%s, queue_pos%020" PRId32 ", len:%d", path, this_queue_pos, len);
 
     return 0;
 }
@@ -925,7 +931,7 @@ static int etcd_leave(void) {
 
     // check master and delete master node
     if (uatomic_is_true(&is_master)) {
-        snprintf(path, sizeof(path), MASTER_DIR "/%010"PRId32, my_master_seq);
+        snprintf(path, sizeof(path), MASTER_DIR "/%020"PRId32, my_master_seq);
         resp = cetcd_delete(&etcd_cli, path);
         if (resp->err) {
             sd_warn("delete %s failed.", path);
