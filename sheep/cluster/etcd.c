@@ -2,6 +2,8 @@
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <cetcd.h>
+#include <yajl/yajl_tree.h>
+#include <yajl/yajl_gen.h>
 
 #include "cluster.h"
 #include "config.h"
@@ -50,6 +52,71 @@ struct etcd_event {
     size_t buf_len;
     uint8_t buf[ETCD_MAX_BUF_SIZE];
 };
+
+static void event_encode(struct etcd_event* ev, unsigned char** jbuf) {
+    yajl_gen g;
+    const unsigned char* tmp;
+    size_t* len;
+
+    g = yajl_gen_alloc(NULL);
+
+    yajl_gen_map_open(g);
+
+    yajl_gen_string(g, "id", sizeof("id"));
+    yajl_gen_integer(g, ev->id);
+    yajl_gen_string(g, "type", sizeof("type"));
+    yajl_gen_integer(g, ev->type);
+    yajl_gen_string(g, "sender", sizeof("sender"));
+      yajl_gen_map_open(g);
+      yajl_gen_string(g, "node", sizeof("node"));
+        yajl_gen_map_open(g);
+        yajl_gen_string(g, "nid", sizeof("nid"));
+          yajl_gen_map_open(g);
+          yajl_gen_string(g, "addr", sizeof("addr"));
+          yajl_gen_string(g, ev->sender.node.nid.addr, 16);
+          yajl_gen_string(g, "port", sizeof("port"));
+          yajl_gen_integer(g, ev->sender.node.nid.port);
+          yajl_gen_string(g, "io_addr", sizeof("io_addr"));
+          yajl_gen_string(g, ev->sender.node.nid.io_addr, 16);
+          yajl_gen_string(g, "io_port", sizeof("io_port"));
+          yajl_gen_integer(g, ev->sender.node.nid.io_port);
+          yajl_gen_string(g, "status", sizeof("status"));
+          yajl_gen_integer(g, ev->sender.node.nid.status);
+          yajl_gen_map_close(g);
+        yajl_gen_string(g, "nr_vnodes", sizeof("nr_vnodes"));
+        yajl_gen_integer(g, ev->sender.node.nr_vnodes);
+        yajl_gen_string(g, "zone", sizeof("zone"));
+        yajl_gen_integer(g, ev->sender.node.zone);
+        yajl_gen_string(g, "space", sizeof("space"));
+        yajl_gen_integer(g, ev->sender.node.space);
+        yajl_gen_map_close(g);
+      yajl_gen_map_close(g);
+      yajl_gen_string(g, "callbacked", sizeof("callbacked"));
+      yajl_gen_bool(g, ev->sender.callbacked);
+      yajl_gen_string(g, "gone", sizeof("gone"));
+      yajl_gen_bool(g, ev->sender.gone);
+    yajl_gen_string(g, "msg_len", sizeof("msg_len"));
+    yajl_gen_integer(g, ev->msg_len);
+    yajl_gen_string(g, "nr_nodes", sizeof("nr_nodes"));
+    yajl_gen_integer(g, ev->nr_nodes);
+    yajl_gen_string(g, "buf_len", sizeof("buf_len"));
+    yajl_gen_integer(g, ev->buf_len);
+    yajl_gen_string(g, "buf", sizeof("buf"));
+    yajl_gen_string(g, ev->buf, ev->buf_len);
+
+    yajl_gen_map_close(g);
+
+    yajl_gen_get_buf(g, &tmp, len);
+    *jbuf = malloc((*len)*sizeof(char));
+    memcpy(*jbuf, tmp, *len);
+
+    yajl_gen_clear(g);
+    yajl_gen_free(g);
+}
+
+static void event_decode(unsigned char** jbuf, struct etcd_event* ev) {
+
+}
 
 static struct rb_root sd_node_root = RB_ROOT;
 static size_t nr_sd_nodes;
