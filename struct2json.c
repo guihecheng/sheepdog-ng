@@ -29,7 +29,7 @@ void S2J(S* s, unsigned char** j) {
     yajl_gen g;
     //yajl_gen_status r;
     const unsigned char* tmp;
-    size_t* len;
+    size_t len;
 
     g = yajl_gen_alloc(NULL);
     yajl_gen_map_open(g);
@@ -51,7 +51,7 @@ void S2J(S* s, unsigned char** j) {
 
     yajl_gen_map_close(g);
 
-    yajl_gen_get_buf(g, &tmp, len);
+    yajl_gen_get_buf(g, &tmp, &len);
 
     *j = malloc((*len)*sizeof(char));
     memcpy(*j, tmp, *len);
