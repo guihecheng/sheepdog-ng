@@ -518,7 +518,6 @@ static int etcd_queue_pop_advance(struct etcd_event* ev) {
 
     len = strlen(resp->node->value);
     event_decode((unsigned char*)resp->node->value, ev);
-    memcpy(ev, resp->node->value, len);
     sd_debug("%s, type:%d, len:%d, pos:%" PRId32, path, ev->type, len, this_queue_pos);
 
     if (this_queue_pos % QUEUE_DEL_BATCH == 0
