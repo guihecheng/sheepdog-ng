@@ -749,6 +749,7 @@ static int push_join_response(struct etcd_event* ev) {
     struct sd_node* np = etcd_event_sd_nodes(ev);
     int len;
     cetcd_response* resp;
+    unsigned char* jbuf;
 
     ev->type = EVENT_ACCEPT;
     ev->nr_nodes = nr_sd_nodes;
@@ -757,18 +758,26 @@ static int push_join_response(struct etcd_event* ev) {
     }
     this_queue_pos--;
 
-    len = offsetof(typeof(*ev), buf) + ev->buf_len;
+    //len = offsetof(typeof(*ev), buf) + ev->buf_len;
     snprintf(path, sizeof(path), QUEUE_DIR "/%020"PRId32, this_queue_pos);
 
-    resp = cetcd_set(&etcd_cli, path, (char*)ev, PERSISTENT_TTL);
+    event_encode(ev, &jbuf);
+    len = strlen((char*)jbuf);
+
+    resp = cetcd_set(&etcd_cli, path, (char*)jbuf, PERSISTENT_TTL);
     if (resp->err) {
-        sd_err("get path %s failed.", path);
+        sd_err("set path %s failed.", path);
+        goto err;
     }
 
     cetcd_response_release(resp);
+    free(jbuf);
     sd_debug("update path:%s, queue_pos%020" PRId32 ", len:%d", path, this_queue_pos, len);
-
     return 0;
+err:
+    cetcd_response_release(resp);
+    free(jbuf);
+    return -1;
 }
 
 static void etcd_handle_join(struct etcd_event* ev) {
@@ -811,22 +820,24 @@ static void etcd_handle_accept(struct etcd_event* ev) {
 
     sd_debug("%s", node_to_str(&ev->sender.node));
 
-    snprintf(path, sizeof(path), MEMBER_DIR"/%s", node_to_str(&ev->sender.node));
-    snprintf(queue_pos_path, sizeof(queue_pos_path), MEMBER_QUEUE_POS_DIR "/%s", node_to_str(&ev->sender.node));
+    snprintf(path, sizeof(path), MEMBER_DIR"/\'%s\'", node_to_str(&ev->sender.node));
+    snprintf(queue_pos_path, sizeof(queue_pos_path), MEMBER_QUEUE_POS_DIR "/\'%s\'", node_to_str(&ev->sender.node));
 
     if (node_eq(&ev->sender.node, &this_node.node)) {
         joined = true;
         sd_debug("create path:%s",  path);
         resp = cetcd_set(&etcd_cli, path, (char*)connect_option, EPHERMERAL_TTL);
         if (resp->err) {
-            sd_err("create path:%s failed.", path);
+            sd_err("create path:%s failed, ecode: %d msg: %s cause: %s",
+                    path, resp->err->ecode, resp->err->message, resp->err->cause);
         }
         cetcd_response_release(resp);
 
         sd_debug("create path:%s", queue_pos_path);
-        resp = cetcd_set(&etcd_cli, path, (char*)&pos, EPHERMERAL_TTL);
+        resp = cetcd_set(&etcd_cli, queue_pos_path, (char*)&pos, EPHERMERAL_TTL);
         if (resp->err) {
-            sd_err("create path:%s failed.", queue_pos_path);
+            sd_err("create path:%s failed, ecode: %d msg: %s cause: %s",
+                    queue_pos_path, resp->err->ecode, resp->err->message, resp->err->cause);
         }
         cetcd_response_release(resp);
 
