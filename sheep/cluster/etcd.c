@@ -91,9 +91,9 @@ static void event_encode(struct etcd_event* ev, unsigned char** jbuf) {
         yajl_gen_map_close(g);
       yajl_gen_map_close(g);
       yajl_gen_string(g, (const unsigned char*)"callbacked", sizeof("callbacked"));
-      yajl_gen_bool(g, ev->sender.callbacked);
+      yajl_gen_integer(g, ev->sender.callbacked);
       yajl_gen_string(g, (const unsigned char*)"gone", sizeof("gone"));
-      yajl_gen_bool(g, ev->sender.gone);
+      yajl_gen_integer(g, ev->sender.gone);
       yajl_gen_map_close(g);
     yajl_gen_string(g, (const unsigned char*)"msg_len", sizeof("msg_len"));
     yajl_gen_integer(g, ev->msg_len);
@@ -121,6 +121,66 @@ static void event_decode(unsigned char* jbuf, struct etcd_event* ev) {
     const char* l1_path[] = { "id", (const char*)0 };
     yajl_val id = yajl_tree_get(node, l1_path, yajl_t_number);
     ev->id = YAJL_GET_INTEGER(id);
+
+    l1_path[0] = "type";
+    yajl_val type = yajl_tree_get(node, l1_path, yajl_t_number);
+    ev->type = YAJL_GET_INTEGER(type);
+
+    l1_path[0] = "msg_len";
+    yajl_val msg_len = yajl_tree_get(node, l1_path, yajl_t_number);
+    ev->msg_len = YAJL_GET_INTEGER(msg_len);
+
+    l1_path[0] = "nr_nodes";
+    yajl_val nr_nodes = yajl_tree_get(node, l1_path, yajl_t_number);
+    ev->nr_nodes = YAJL_GET_INTEGER(nr_nodes);
+
+    l1_path[0] = "buf_len";
+    yajl_val buf_len = yajl_tree_get(node, l1_path, yajl_t_number);
+    ev->buf_len = YAJL_GET_INTEGER(buf_len);
+
+    l1_path[0] = "buf";
+    yajl_val buf = yajl_tree_get(node, l1_path, yajl_t_string);
+    memcpy(ev->buf, YAJL_GET_STRING(buf), ev->buf_len);
+
+    const char* l2_path[] = { "sender", "callbacked", (const char*)0 };
+    yajl_val callbacked = yajl_tree_get(node, l2_path, yajl_t_number);
+    ev->sender.callbacked = YAJL_GET_INTEGER(callbacked);
+
+    l2_path[1] = "gone";
+    yajl_val gone = yajl_tree_get(node, l2_path, yajl_t_number);
+    ev->sender.gone = YAJL_GET_INTEGER(gone);
+
+    const char* l3_path[] = { "sender", "node", "nr_vnodes", (const char*)0 };
+    yajl_val nr_vnodes = yajl_tree_get(node, l3_path, yajl_t_number);
+    ev->sender.node.nr_vnodes = YAJL_GET_INTEGER(nr_vnodes);
+
+    l3_path[2] = "zone";
+    yajl_val zone = yajl_tree_get(node, l3_path, yajl_t_number);
+    ev->sender.node.zone = YAJL_GET_INTEGER(zone);
+
+    l3_path[2] = "space";
+    yajl_val space = yajl_tree_get(node, l3_path, yajl_t_number);
+    ev->sender.node.space = YAJL_GET_INTEGER(space);
+
+    const char* l4_path[] = { "sender", "node", "nid", "addr", (const char*)0 };
+    yajl_val addr = yajl_tree_get(node, l4_path, yajl_t_string);
+    memcpy(ev->sender.node.nid.addr, YAJL_GET_STRING(addr), 16);
+
+    l4_path[3] = "port";
+    yajl_val port = yajl_tree_get(node, l4_path, yajl_t_number);
+    ev->sender.node.nid.port = YAJL_GET_INTEGER(port);
+
+    l4_path[3] = "io_addr";
+    yajl_val io_addr = yajl_tree_get(node, l4_path, yajl_t_string);
+    memcpy(ev->sender.node.nid.io_addr, YAJL_GET_STRING(io_addr), 16);
+
+    l4_path[3] = "io_port";
+    yajl_val io_port = yajl_tree_get(node, l4_path, yajl_t_number);
+    ev->sender.node.nid.io_port = YAJL_GET_INTEGER(io_port);
+
+    l4_path[3] = "status";
+    yajl_val status = yajl_tree_get(node, l4_path, yajl_t_number);
+    ev->sender.node.nid.status = YAJL_GET_INTEGER(status);
 
     yajl_tree_free(node);
 }
