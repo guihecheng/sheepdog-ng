@@ -81,20 +81,19 @@ static void event_encode(struct etcd_event* ev, unsigned char** jbuf) {
           yajl_gen_integer(g, ev->sender.node.nid.io_port);
           yajl_gen_string(g, (const unsigned char*)"status", sizeof("status"));
           yajl_gen_integer(g, ev->sender.node.nid.status);
-          yajl_gen_map_close(g);
+          yajl_gen_map_close(g); // close nid
         yajl_gen_string(g, (const unsigned char*)"nr_vnodes", sizeof("nr_vnodes"));
         yajl_gen_integer(g, ev->sender.node.nr_vnodes);
         yajl_gen_string(g, (const unsigned char*)"zone", sizeof("zone"));
         yajl_gen_integer(g, ev->sender.node.zone);
         yajl_gen_string(g, (const unsigned char*)"space", sizeof("space"));
         yajl_gen_integer(g, ev->sender.node.space);
-        yajl_gen_map_close(g);
-      yajl_gen_map_close(g);
+        yajl_gen_map_close(g); // close node
       yajl_gen_string(g, (const unsigned char*)"callbacked", sizeof("callbacked"));
       yajl_gen_integer(g, ev->sender.callbacked);
       yajl_gen_string(g, (const unsigned char*)"gone", sizeof("gone"));
       yajl_gen_integer(g, ev->sender.gone);
-      yajl_gen_map_close(g);
+      yajl_gen_map_close(g); // close sender
     yajl_gen_string(g, (const unsigned char*)"msg_len", sizeof("msg_len"));
     yajl_gen_integer(g, ev->msg_len);
     yajl_gen_string(g, (const unsigned char*)"nr_nodes", sizeof("nr_nodes"));
@@ -103,7 +102,7 @@ static void event_encode(struct etcd_event* ev, unsigned char** jbuf) {
     yajl_gen_integer(g, ev->buf_len);
     yajl_gen_string(g, (const unsigned char*)"buf", sizeof("buf"));
     yajl_gen_string(g, ev->buf, ev->buf_len);
-    yajl_gen_map_close(g);
+    yajl_gen_map_close(g); // close root
 
     yajl_gen_get_buf(g, &tmp, &len);
     *jbuf = malloc(len*sizeof(char));
