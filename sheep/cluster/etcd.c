@@ -453,13 +453,14 @@ static int etcd_queue_push(struct etcd_event* ev) {
     int len;
     char path[PATH_MAX], buf[MAX_NODE_STR_LEN];
     cetcd_response* resp;
+    unsigned char* jbuf;
 
-    // use the len of the whole struct ?
     //len = offsetof(typeof(*ev), buf) + ev->buf_len;
-    len = sizeof(*ev);
     snprintf(path, sizeof(path), "%s/", QUEUE_DIR);
+    event_encode(ev, &jbuf);
+    len = strlen((char*)jbuf);
 
-    resp = cetcd_create_in_order(&etcd_cli, path, (char*)ev, PERSISTENT_TTL);
+    resp = cetcd_create_in_order(&etcd_cli, path, (char*)jbuf, PERSISTENT_TTL);
     if (resp->err) {
         sd_err("create in order node under %s failed.", path);
     }
@@ -474,6 +475,7 @@ static int etcd_queue_push(struct etcd_event* ev) {
         first_push = false;
     }
 
+    free(jbuf);
     cetcd_response_release(resp);
     sd_debug("create path: %s, queue_pos:%020" PRId32 ", len:%d", buf, this_queue_pos, len);
 
@@ -505,7 +507,6 @@ static int etcd_queue_pop_advance(struct etcd_event* ev) {
     char queue_pos_path[PATH_MAX];
     cetcd_response* resp;
 
-    len = sizeof(*ev);
     snprintf(path, sizeof(path), QUEUE_DIR "/%020"PRId32, this_queue_pos);
 
     resp = cetcd_get(&etcd_cli, path);
@@ -515,6 +516,8 @@ static int etcd_queue_pop_advance(struct etcd_event* ev) {
         return -1;
     }
 
+    len = strlen(resp->node->value);
+    event_decode((unsigned char*)resp->node->value, ev);
     memcpy(ev, resp->node->value, len);
     sd_debug("%s, type:%d, len:%d, pos:%" PRId32, path, ev->type, len, this_queue_pos);
 
@@ -676,7 +679,7 @@ static int etcd_watcher(void* data, cetcd_response* resp) {
         eventfd_xwrite(efd, 1);
     } else if (action == 3) {          // create
         eventfd_xwrite(efd, 1);
-    } else if (action == 4) {          // delete
+    } else if (action == 4 || action == 5) {          // delete | expire
         ret = sscanf(resp->node->key, MASTER_DIR "/%s", str);
         if (ret == 1) {
             etcd_compete_master();
@@ -702,7 +705,7 @@ static int etcd_watcher(void* data, cetcd_response* resp) {
             if (n) add_event(EVENT_LEAVE, &enode, NULL, 0);
         }
     } else if (action == 2) {          // update
-        ;
+        sd_debug("ignore action:%d (update)", action);
     } else {
         sd_debug("ignore action:%d", action);
     }
