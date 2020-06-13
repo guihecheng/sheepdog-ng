@@ -184,6 +184,31 @@ static void event_decode(unsigned char* jbuf, struct etcd_event* ev) {
     yajl_tree_free(node);
 }
 
+static inline const char *etcd_node_to_str(const struct sd_node *id)
+{
+    char* str = (char*)node_to_str(id);
+    size_t len = strlen(str);
+    for (int i = 0; i < len; i++) {
+        if (str[i] == ' ') {
+            str[i] = '+';
+        }
+    }
+    return str;
+}
+
+static inline struct sd_node *etcd_str_to_node(const char *str, struct sd_node *id)
+{
+	int port;
+	char v[8], ip[MAX_NODE_STR_LEN];
+
+	sscanf(str, "%s+ip:%s+port:%d", v, ip, &port);
+	id->nid.port = port;
+	if (!str_to_addr(ip, id->nid.addr))
+		return NULL;
+
+	return id;
+}
+
 static struct rb_root sd_node_root = RB_ROOT;
 static size_t nr_sd_nodes;
 static struct rb_root etcd_node_root = RB_ROOT;
@@ -356,7 +381,7 @@ static int etcd_verify_last_sheep_join(int seq, int* last_sheep) {
             continue;
         }
 
-        snprintf(path, PATH_MAX, MEMBER_DIR "/%s", name);
+        snprintf(path, PATH_MAX, MEMBER_DIR "/%s", etcd_node_to_str(&this_node.node));
         resp = cetcd_get(&etcd_cli, path);
         if (resp->err) {
             cetcd_response_release(resp);
@@ -524,7 +549,7 @@ static int etcd_queue_pop_advance(struct etcd_event* ev) {
      && ev->type != EVENT_JOIN
      && ev->type != EVENT_ACCEPT) {
         snprintf(queue_pos_path, sizeof(queue_pos_path),
-                MEMBER_QUEUE_POS_DIR"/%s", node_to_str(&this_node.node));
+                MEMBER_QUEUE_POS_DIR"/%s", etcd_node_to_str(&this_node.node));
 
         cetcd_response_release(resp);
         resp = cetcd_set(&etcd_cli, queue_pos_path, (char*)&this_queue_pos, PERSISTENT_TTL);
@@ -695,7 +720,7 @@ static int etcd_watcher(void* data, cetcd_response* resp) {
         if (ret == 1) {
             p = strrchr(resp->node->key, '/');
             p++;
-            str_to_node(p, &enode.node);
+            etcd_str_to_node(p, &enode.node);
 
             sd_read_lock(&etcd_tree_lock);
             n = etcd_tree_search_nolock(&enode.node.nid);
@@ -820,8 +845,8 @@ static void etcd_handle_accept(struct etcd_event* ev) {
 
     sd_debug("%s", node_to_str(&ev->sender.node));
 
-    snprintf(path, sizeof(path), MEMBER_DIR"/\'%s\'", node_to_str(&ev->sender.node));
-    snprintf(queue_pos_path, sizeof(queue_pos_path), MEMBER_QUEUE_POS_DIR "/\'%s\'", node_to_str(&ev->sender.node));
+    snprintf(path, sizeof(path), MEMBER_DIR"/%s", etcd_node_to_str(&ev->sender.node));
+    snprintf(queue_pos_path, sizeof(queue_pos_path), MEMBER_QUEUE_POS_DIR "/%s", etcd_node_to_str(&ev->sender.node));
 
     if (node_eq(&ev->sender.node, &this_node.node)) {
         joined = true;
@@ -1038,10 +1063,10 @@ static int etcd_join(const struct sd_node* myself, void* opaque,
     // check exist
     this_node.node = *myself;
 
-    snprintf(path, sizeof(path), MEMBER_DIR "/%s", node_to_str(myself));
+    snprintf(path, sizeof(path), MEMBER_DIR "/%s", etcd_node_to_str(myself));
     resp1 = cetcd_get(&etcd_cli, path);
 
-    snprintf(path, sizeof(path), MEMBER_QUEUE_POS_DIR "/%s", node_to_str(myself));
+    snprintf(path, sizeof(path), MEMBER_QUEUE_POS_DIR "/%s", etcd_node_to_str(myself));
     resp2 = cetcd_get(&etcd_cli, path);
 
     if (!resp1->err || !resp2->err) {
@@ -1090,7 +1115,7 @@ static int etcd_leave(void) {
     }
 
     // delete member node & queue_pos_path
-    snprintf(path, sizeof(path), MEMBER_DIR "/%s", node_to_str(&this_node.node));
+    snprintf(path, sizeof(path), MEMBER_DIR "/%s", etcd_node_to_str(&this_node.node));
     resp = cetcd_delete(&etcd_cli, path);
     if (resp->err) {
         sd_warn("delete %s failed.", path);
@@ -1098,7 +1123,7 @@ static int etcd_leave(void) {
 
     cetcd_response_release(resp);
 
-    snprintf(queue_pos_path, sizeof(queue_pos_path), MEMBER_QUEUE_POS_DIR "/%s", node_to_str(&this_node.node));
+    snprintf(queue_pos_path, sizeof(queue_pos_path), MEMBER_QUEUE_POS_DIR "/%s", etcd_node_to_str(&this_node.node));
     resp = cetcd_delete(&etcd_cli, queue_pos_path);
     if (resp->err) {
         sd_warn("delete %s failed.", queue_pos_path);
