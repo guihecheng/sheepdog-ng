@@ -230,6 +230,8 @@ static cetcd_array watchers;
 static int efd;
 static struct etcd_node this_node;
 static int32_t this_queue_pos;
+static int32_t next_queue_pos = -1;
+static struct sd_rw_lock etcd_queue_pos_lock = SD_RW_LOCK_INITIALIZER;
 #define QUEUE_DEL_BATCH 1000
 
 static int etcd_node_cmp(const struct etcd_node* a, const struct etcd_node *b) {
@@ -521,6 +523,12 @@ static int etcd_queue_peek(bool* peek) {
     char path[PATH_MAX];
     cetcd_response* resp;
 
+    sd_read_lock(&etcd_queue_pos_lock);
+    if (next_queue_pos - this_queue_pos > 0) {
+        this_queue_pos = next_queue_pos;
+    }
+    sd_rw_unlock(&etcd_queue_pos_lock);
+
     snprintf(path, sizeof(path), QUEUE_DIR "/%020"PRId32, this_queue_pos);
 
     resp = cetcd_get(&etcd_cli, path);
@@ -711,6 +719,9 @@ static int etcd_watcher(void* data, cetcd_response* resp) {
     if (action == 0) {                 // set
         eventfd_xwrite(efd, 1);
     } else if (action == 3) {          // create
+        sd_write_lock(&etcd_queue_pos_lock);
+        ret = sscanf(resp->node->key, QUEUE_DIR "/%"PRId32, &next_queue_pos);
+        sd_rw_unlock(&etcd_queue_pos_lock);
         eventfd_xwrite(efd, 1);
     } else if (action == 4 || action == 5) {          // delete | expire
         ret = sscanf(resp->node->key, MASTER_DIR "/%s", str);
