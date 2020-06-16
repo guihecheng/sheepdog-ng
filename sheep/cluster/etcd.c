@@ -21,8 +21,9 @@
 #define MASTER_DIR                    DEFAULT_BASE"/master"
 
 #define PERSISTENT_TTL                0                // seconds
-#define EPHERMERAL_TTL                20               // seconds
-#define REFRESH_TTL_INTERVAL          10               // seconds
+#define EPHERMERAL_TTL                60               // seconds
+#define EPHERMERAL_MASTER_TTL         600              // seconds
+#define REFRESH_TTL_INTERVAL          10000            // mseconds
 
 #define ETCD_MAX_BUF_SIZE             (1*1024*1024)    // 1M
 
@@ -293,6 +294,7 @@ static void build_node_list(void) {
 
 struct epher_key {
     char* key;
+    uint64_t ttl;
     struct list_node list;
 };
 
@@ -305,7 +307,13 @@ static void refresh_ttl(void* arg) {
 
     sd_read_lock(&epher_key_lock);
     list_for_each_entry (k, &epher_key_list, list) {
-        resp = cetcd_update(&etcd_cli, k->key, NULL, EPHERMERAL_TTL, 1);
+        resp = cetcd_update(&etcd_cli, k->key, NULL, k->ttl, 1);
+        if (resp->err) {
+            sd_err("refresh key:%s failed, ecode: %d msg: %s cause: %s",
+                    k->key, resp->err->ecode, resp->err->message, resp->err->cause);
+        } else {
+            sd_debug("refresh key %s", k->key);
+        }
         cetcd_response_release(resp);
     }
     sd_rw_unlock(&epher_key_lock);
@@ -417,7 +425,7 @@ static void etcd_compete_master(void) {
         sd_debug("start to compete master for the first time");
         snprintf(path, sizeof(path), "%s/", MASTER_DIR);
 
-        resp = cetcd_create_in_order(&etcd_cli, path, (char*)node_to_str(&this_node.node), EPHERMERAL_TTL);
+        resp = cetcd_create_in_order(&etcd_cli, path, (char*)node_to_str(&this_node.node), EPHERMERAL_MASTER_TTL);
         if (resp->err) {
             sd_err("create in order node under %s failed.", path);
         }
@@ -428,6 +436,7 @@ static void etcd_compete_master(void) {
 
         struct epher_key* master_key = xzalloc(sizeof(struct epher_key));
         master_key->key = strdup(my_compete_path);
+        master_key->ttl = EPHERMERAL_MASTER_TTL;
 
         sd_write_lock(&epher_key_lock);
         list_add_tail(&master_key->list, &epher_key_list);
@@ -453,15 +462,15 @@ static void etcd_compete_master(void) {
     }
 
     // check previous members all quit
-    ret = etcd_verify_last_sheep_join(my_seq, &last_joined_sheep);
-    if (!ret) {
-        goto out_unlock;
-    }
+    /*ret = etcd_verify_last_sheep_join(my_seq, &last_joined_sheep);*/
+    /*if (!ret) {*/
+        /*goto out_unlock;*/
+    /*}*/
     // all previous members quit, I win
-    if (last_joined_sheep < 0) {
-        master_seq = my_seq;
-        goto success;
-    }
+    /*if (last_joined_sheep < 0) {*/
+        /*master_seq = my_seq;*/
+        /*goto success;*/
+    /*}*/
 
 lost:
     sd_debug("lost");
@@ -869,7 +878,9 @@ static void etcd_handle_accept(struct etcd_event* ev) {
         struct epher_key* member_key = xzalloc(sizeof(struct epher_key));
         struct epher_key* queue_pos_key = xzalloc(sizeof(struct epher_key));
         member_key->key = strdup(path);
+        member_key->ttl = EPHERMERAL_TTL;
         queue_pos_key->key = strdup(queue_pos_path);
+        queue_pos_key->ttl = EPHERMERAL_TTL;
 
         sd_write_lock(&epher_key_lock);
         list_add_tail(&member_key->list, &epher_key_list);
