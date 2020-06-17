@@ -39,7 +39,7 @@ libisa_a_SOURCES	= $(shell find isa-l/ -type f -regex ".*\.\(c\|h\|asm\)") \
 
 libsd_a_SOURCES		= event.c logger.c net.c util.c rbtree.c strbuf.c \
 			  sha1.c option.c work.c sockfd_cache.c fec.c \
-			  sd_inode.c common.c
+			  sd_inode.c common.c base64.c
 
 libsd_a_LIBADD		= isa-l/bin/ec_base.o \
 			  isa-l/bin/ec_highlevel_func.o \
