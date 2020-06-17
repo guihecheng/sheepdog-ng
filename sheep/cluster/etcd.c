@@ -22,8 +22,8 @@
 #define MASTER_DIR                    DEFAULT_BASE"/master"
 
 #define PERSISTENT_TTL                0                // seconds
-#define EPHERMERAL_TTL                60               // seconds
-#define EPHERMERAL_MASTER_TTL         600              // seconds
+#define EPHERMERAL_TTL                30               // seconds
+#define EPHERMERAL_MASTER_TTL         90               // seconds
 #define REFRESH_TTL_INTERVAL          10000            // mseconds
 
 #define ETCD_MAX_BUF_SIZE             (1*1024*1024)    // 1M
@@ -213,9 +213,19 @@ static inline const char *etcd_node_to_str(const struct sd_node *id)
 static inline struct sd_node *etcd_str_to_node(const char *str, struct sd_node *id)
 {
 	int port;
-	char v[8], ip[MAX_NODE_STR_LEN];
+	char ip[MAX_NODE_STR_LEN];
+    char *ipp, *portp;
 
-	sscanf(str, "%s+ip:%s+port:%d", v, ip, &port);
+    ipp = strchr(str, ':');
+    ipp++;
+
+    for (int i = 0; ipp && *ipp != '+'; i++, ipp++)
+        ip[i] = *ipp;
+
+    portp = strrchr(str, ':');
+    portp++;
+    port = atoi(portp);
+
 	id->nid.port = port;
 	if (!str_to_addr(ip, id->nid.addr))
 		return NULL;
@@ -755,15 +765,20 @@ static int etcd_watcher(void* data, cetcd_response* resp) {
 
         ret = sscanf(resp->node->key, MEMBER_DIR "/%s", str);
         if (ret == 1) {
+            sd_debug("detect node leave: %s", str);
             p = strrchr(resp->node->key, '/');
             p++;
             etcd_str_to_node(p, &enode.node);
 
             sd_read_lock(&etcd_tree_lock);
             n = etcd_tree_search_nolock(&enode.node.nid);
-            if (n) n->gone = true;
+            if (n) {
+                n->gone = true;
+            }
             sd_rw_unlock(&etcd_tree_lock);
-            if (n) add_event(EVENT_LEAVE, &enode, NULL, 0);
+            if (n) {
+                add_event(EVENT_LEAVE, &enode, NULL, 0);
+            }
         }
     } else if (action == 2) {          // update
         sd_debug("ignore action:%d (update)", action);
@@ -834,7 +849,7 @@ static int push_join_response(struct etcd_event* ev) {
 
     cetcd_response_release(resp);
     free(jbuf);
-    sd_debug("update path:%s, queue_pos%020" PRId32 ", len:%d", path, this_queue_pos, len);
+    sd_debug("update path:%s, queue_pos:%020" PRId32 ", len:%d", path, this_queue_pos, len);
     return 0;
 err:
     cetcd_response_release(resp);
@@ -914,8 +929,6 @@ static void etcd_handle_accept(struct etcd_event* ev) {
         list_add_tail(&member_key->list, &epher_key_list);
         list_add_tail(&queue_pos_key->list, &epher_key_list);
         sd_rw_unlock(&epher_key_lock);
-    } else {
-        ;
     }
 
     etcd_tree_add(&ev->sender);
@@ -937,6 +950,7 @@ static void block_event_list_del(struct etcd_node* n) {
 static void etcd_handle_leave(struct etcd_event* ev) {
     struct etcd_node* n = etcd_tree_search(&ev->sender.node.nid);
 
+    sd_debug("LEAVE");
     if (!n) {
         sd_debug("can't find the leave node:%s, ignore it.", node_to_str(&ev->sender.node));
         return;
