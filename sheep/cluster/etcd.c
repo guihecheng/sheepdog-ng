@@ -2,8 +2,6 @@
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <cetcd.h>
-#include <yajl/yajl_tree.h>
-#include <yajl/yajl_gen.h>
 
 #include "cluster.h"
 #include "config.h"
@@ -55,147 +53,22 @@ struct etcd_event {
     uint8_t buf[ETCD_MAX_BUF_SIZE];
 };
 
-static void event_encode(struct etcd_event* ev, unsigned char** jbuf) {
-    yajl_gen g;
-    const unsigned char* tmp;
-    unsigned char* b64_out;
+static void event_encode(struct etcd_event* ev, unsigned char** b64_out, int* out_len) {
     int b64_out_size;
-    size_t len;
+    int len;
 
-    g = yajl_gen_alloc(NULL);
+    len = offsetof(typeof(*ev), buf) + ev->buf_len;
 
-    yajl_gen_map_open(g);
-    yajl_gen_string(g, (const unsigned char*)"id", strlen("id"));
-    yajl_gen_integer(g, ev->id);
-    yajl_gen_string(g, (const unsigned char*)"type", strlen("type"));
-    yajl_gen_integer(g, ev->type);
-    yajl_gen_string(g, (const unsigned char*)"sender", strlen("sender"));
-      yajl_gen_map_open(g);
-      yajl_gen_string(g, (const unsigned char*)"node", strlen("node"));
-        yajl_gen_map_open(g);
-        yajl_gen_string(g, (const unsigned char*)"nid", strlen("nid"));
-          yajl_gen_map_open(g);
-          yajl_gen_string(g, (const unsigned char*)"addr", strlen("addr"));
-          yajl_gen_string(g, ev->sender.node.nid.addr, 16);
-          yajl_gen_string(g, (const unsigned char*)"port", strlen("port"));
-          yajl_gen_integer(g, ev->sender.node.nid.port);
-          yajl_gen_string(g, (const unsigned char*)"io_addr", strlen("io_addr"));
-          yajl_gen_string(g, ev->sender.node.nid.io_addr, 16);
-          yajl_gen_string(g, (const unsigned char*)"io_port", strlen("io_port"));
-          yajl_gen_integer(g, ev->sender.node.nid.io_port);
-          yajl_gen_string(g, (const unsigned char*)"status", strlen("status"));
-          yajl_gen_integer(g, ev->sender.node.nid.status);
-          yajl_gen_map_close(g); // close nid
-        yajl_gen_string(g, (const unsigned char*)"nr_vnodes", strlen("nr_vnodes"));
-        yajl_gen_integer(g, ev->sender.node.nr_vnodes);
-        yajl_gen_string(g, (const unsigned char*)"zone", strlen("zone"));
-        yajl_gen_integer(g, ev->sender.node.zone);
-        yajl_gen_string(g, (const unsigned char*)"space", strlen("space"));
-        yajl_gen_integer(g, ev->sender.node.space);
-        yajl_gen_map_close(g); // close node
-      yajl_gen_string(g, (const unsigned char*)"callbacked", strlen("callbacked"));
-      yajl_gen_integer(g, ev->sender.callbacked);
-      yajl_gen_string(g, (const unsigned char*)"gone", strlen("gone"));
-      yajl_gen_integer(g, ev->sender.gone);
-      yajl_gen_map_close(g); // close sender
-    yajl_gen_string(g, (const unsigned char*)"msg_len", strlen("msg_len"));
-    yajl_gen_integer(g, ev->msg_len);
-    yajl_gen_string(g, (const unsigned char*)"nr_nodes", strlen("nr_nodes"));
-    yajl_gen_integer(g, ev->nr_nodes);
-    yajl_gen_string(g, (const unsigned char*)"buf_len", strlen("buf_len"));
-    yajl_gen_integer(g, ev->buf_len);
-
-    yajl_gen_string(g, (const unsigned char*)"buf", strlen("buf"));
-    b64_out_size = b64e_size(ev->buf_len) + 1;
-    b64_out = malloc(b64_out_size * sizeof(char));
-    b64_out_size = b64_encode(ev->buf, ev->buf_len, b64_out);
-    yajl_gen_string(g, b64_out, b64_out_size);
-
-    yajl_gen_map_close(g); // close root
-
-    yajl_gen_get_buf(g, &tmp, &len);
-    *jbuf = malloc(len*sizeof(char));
-    memcpy(*jbuf, tmp, len);
-
-    yajl_gen_clear(g);
-    yajl_gen_free(g);
-    free(b64_out);
+    b64_out_size = b64e_size(len) + 1;
+    *b64_out = malloc(b64_out_size * sizeof(char));
+    *out_len = b64_encode((unsigned char*)ev, len, *b64_out);
 }
 
-static void event_decode(unsigned char* jbuf, struct etcd_event* ev) {
-    yajl_val node;
-    char* b64_in;
+static void event_decode(unsigned char* b64_in, struct etcd_event* ev) {
     int b64_in_size;
 
-    node = yajl_tree_parse((char*)jbuf, NULL, 0);
-
-    const char* l1_path[] = { "id", (const char*)0 };
-    yajl_val id = yajl_tree_get(node, l1_path, yajl_t_number);
-    ev->id = YAJL_GET_INTEGER(id);
-
-    l1_path[0] = "type";
-    yajl_val type = yajl_tree_get(node, l1_path, yajl_t_number);
-    ev->type = YAJL_GET_INTEGER(type);
-
-    l1_path[0] = "msg_len";
-    yajl_val msg_len = yajl_tree_get(node, l1_path, yajl_t_number);
-    ev->msg_len = YAJL_GET_INTEGER(msg_len);
-
-    l1_path[0] = "nr_nodes";
-    yajl_val nr_nodes = yajl_tree_get(node, l1_path, yajl_t_number);
-    ev->nr_nodes = YAJL_GET_INTEGER(nr_nodes);
-
-    l1_path[0] = "buf_len";
-    yajl_val buf_len = yajl_tree_get(node, l1_path, yajl_t_number);
-    ev->buf_len = YAJL_GET_INTEGER(buf_len);
-
-    l1_path[0] = "buf";
-    yajl_val buf = yajl_tree_get(node, l1_path, yajl_t_string);
-    b64_in = YAJL_GET_STRING(buf);
-    b64_in_size = strlen(b64_in);
-    b64_decode((unsigned char*)b64_in, b64_in_size, ev->buf);
-
-    const char* l2_path[] = { "sender", "callbacked", (const char*)0 };
-    yajl_val callbacked = yajl_tree_get(node, l2_path, yajl_t_number);
-    ev->sender.callbacked = YAJL_GET_INTEGER(callbacked);
-
-    l2_path[1] = "gone";
-    yajl_val gone = yajl_tree_get(node, l2_path, yajl_t_number);
-    ev->sender.gone = YAJL_GET_INTEGER(gone);
-
-    const char* l3_path[] = { "sender", "node", "nr_vnodes", (const char*)0 };
-    yajl_val nr_vnodes = yajl_tree_get(node, l3_path, yajl_t_number);
-    ev->sender.node.nr_vnodes = YAJL_GET_INTEGER(nr_vnodes);
-
-    l3_path[2] = "zone";
-    yajl_val zone = yajl_tree_get(node, l3_path, yajl_t_number);
-    ev->sender.node.zone = YAJL_GET_INTEGER(zone);
-
-    l3_path[2] = "space";
-    yajl_val space = yajl_tree_get(node, l3_path, yajl_t_number);
-    ev->sender.node.space = YAJL_GET_INTEGER(space);
-
-    const char* l4_path[] = { "sender", "node", "nid", "addr", (const char*)0 };
-    yajl_val addr = yajl_tree_get(node, l4_path, yajl_t_string);
-    memcpy(ev->sender.node.nid.addr, YAJL_GET_STRING(addr), 16);
-
-    l4_path[3] = "port";
-    yajl_val port = yajl_tree_get(node, l4_path, yajl_t_number);
-    ev->sender.node.nid.port = YAJL_GET_INTEGER(port);
-
-    l4_path[3] = "io_addr";
-    yajl_val io_addr = yajl_tree_get(node, l4_path, yajl_t_string);
-    memcpy(ev->sender.node.nid.io_addr, YAJL_GET_STRING(io_addr), 16);
-
-    l4_path[3] = "io_port";
-    yajl_val io_port = yajl_tree_get(node, l4_path, yajl_t_number);
-    ev->sender.node.nid.io_port = YAJL_GET_INTEGER(io_port);
-
-    l4_path[3] = "status";
-    yajl_val status = yajl_tree_get(node, l4_path, yajl_t_number);
-    ev->sender.node.nid.status = YAJL_GET_INTEGER(status);
-
-    yajl_tree_free(node);
+    b64_in_size = strlen((char*)b64_in);
+    b64_decode(b64_in, b64_in_size, (unsigned char*)ev);
 }
 
 static inline const char *etcd_node_to_str(const struct sd_node *id)
@@ -512,14 +385,12 @@ static int etcd_queue_push(struct etcd_event* ev) {
     int len;
     char path[PATH_MAX], buf[MAX_NODE_STR_LEN];
     cetcd_response* resp;
-    unsigned char* jbuf;
+    unsigned char* b64_out;
 
-    //len = offsetof(typeof(*ev), buf) + ev->buf_len;
     snprintf(path, sizeof(path), "%s/", QUEUE_DIR);
-    event_encode(ev, &jbuf);
-    len = strlen((char*)jbuf);
+    event_encode(ev, &b64_out, &len);
 
-    resp = cetcd_create_in_order(&etcd_cli, path, (char*)jbuf, PERSISTENT_TTL);
+    resp = cetcd_create_in_order(&etcd_cli, path, (char*)b64_out, PERSISTENT_TTL);
     if (resp->err) {
         sd_err("create in order node under %s failed.", path);
         cetcd_response_release(resp);
@@ -538,7 +409,6 @@ static int etcd_queue_push(struct etcd_event* ev) {
         first_push = false;
     }
 
-    free(jbuf);
     cetcd_response_release(resp);
     sd_debug("create path: %s, queue_pos:%020" PRId32 ", len:%d", buf, this_queue_pos, len);
 
@@ -826,7 +696,7 @@ static int push_join_response(struct etcd_event* ev) {
     struct sd_node* np = etcd_event_sd_nodes(ev);
     int len;
     cetcd_response* resp;
-    unsigned char* jbuf;
+    unsigned char* b64_out;
 
     ev->type = EVENT_ACCEPT;
     ev->nr_nodes = nr_sd_nodes;
@@ -835,25 +705,21 @@ static int push_join_response(struct etcd_event* ev) {
     }
     this_queue_pos--;
 
-    //len = offsetof(typeof(*ev), buf) + ev->buf_len;
     snprintf(path, sizeof(path), QUEUE_DIR "/%020"PRId32, this_queue_pos);
 
-    event_encode(ev, &jbuf);
-    len = strlen((char*)jbuf);
+    event_encode(ev, &b64_out, &len);
 
-    resp = cetcd_set(&etcd_cli, path, (char*)jbuf, PERSISTENT_TTL);
+    resp = cetcd_set(&etcd_cli, path, (char*)b64_out, PERSISTENT_TTL);
     if (resp->err) {
         sd_err("set path %s failed.", path);
         goto err;
     }
 
     cetcd_response_release(resp);
-    free(jbuf);
     sd_debug("update path:%s, queue_pos:%020" PRId32 ", len:%d", path, this_queue_pos, len);
     return 0;
 err:
     cetcd_response_release(resp);
-    free(jbuf);
     return -1;
 }
 
