@@ -11,6 +11,7 @@
 #include "work.h"
 #include "util.h"
 #include "rbtree.h"
+#include "base64.h"
 
 #define HOST_MAX_LEN                  128
 
@@ -57,6 +58,8 @@ struct etcd_event {
 static void event_encode(struct etcd_event* ev, unsigned char** jbuf) {
     yajl_gen g;
     const unsigned char* tmp;
+    unsigned char* b64_out;
+    int b64_out_size;
     size_t len;
 
     g = yajl_gen_alloc(NULL);
@@ -101,8 +104,13 @@ static void event_encode(struct etcd_event* ev, unsigned char** jbuf) {
     yajl_gen_integer(g, ev->nr_nodes);
     yajl_gen_string(g, (const unsigned char*)"buf_len", strlen("buf_len"));
     yajl_gen_integer(g, ev->buf_len);
+
     yajl_gen_string(g, (const unsigned char*)"buf", strlen("buf"));
-    yajl_gen_string(g, ev->buf, ev->buf_len);
+    b64_out_size = b64e_size(ev->buf_len) + 1;
+    b64_out = malloc(b64_out_size * sizeof(char));
+    b64_out_size = b64_encode(ev->buf, ev->buf_len, b64_out);
+    yajl_gen_string(g, b64_out, b64_out_size);
+
     yajl_gen_map_close(g); // close root
 
     yajl_gen_get_buf(g, &tmp, &len);
@@ -111,10 +119,13 @@ static void event_encode(struct etcd_event* ev, unsigned char** jbuf) {
 
     yajl_gen_clear(g);
     yajl_gen_free(g);
+    free(b64_out);
 }
 
 static void event_decode(unsigned char* jbuf, struct etcd_event* ev) {
     yajl_val node;
+    char* b64_in;
+    int b64_in_size;
 
     node = yajl_tree_parse((char*)jbuf, NULL, 0);
 
@@ -140,7 +151,9 @@ static void event_decode(unsigned char* jbuf, struct etcd_event* ev) {
 
     l1_path[0] = "buf";
     yajl_val buf = yajl_tree_get(node, l1_path, yajl_t_string);
-    memcpy(ev->buf, YAJL_GET_STRING(buf), ev->buf_len);
+    b64_in = YAJL_GET_STRING(buf);
+    b64_in_size = strlen(b64_in);
+    b64_decode((unsigned char*)b64_in, b64_in_size, ev->buf);
 
     const char* l2_path[] = { "sender", "callbacked", (const char*)0 };
     yajl_val callbacked = yajl_tree_get(node, l2_path, yajl_t_number);
@@ -517,7 +530,7 @@ static int etcd_queue_push(struct etcd_event* ev) {
 
     free(jbuf);
     cetcd_response_release(resp);
-    sd_debug("create path: %s, queue_pos:%020" PRId32 ", len:%d, buf_len:%d", buf, this_queue_pos, len, ev->buf_len);
+    sd_debug("create path: %s, queue_pos:%020" PRId32 ", len:%d", buf, this_queue_pos, len);
 
     return 0;
 }
@@ -564,7 +577,7 @@ static int etcd_queue_pop_advance(struct etcd_event* ev) {
 
     len = strlen(resp->node->value);
     event_decode((unsigned char*)resp->node->value, ev);
-    sd_debug("%s, type:%d, len:%d, buf_len: %d, pos:%" PRId32, path, ev->type, len, ev->buf_len, this_queue_pos);
+    sd_debug("%s, type:%d, len:%d, pos:%" PRId32, path, ev->type, len, this_queue_pos);
 
     if (this_queue_pos % QUEUE_DEL_BATCH == 0
      && ev->type != EVENT_JOIN
