@@ -741,7 +741,7 @@ static void init_node_list(struct etcd_event* ev) {
     struct sd_node* np = etcd_event_sd_nodes(ev);
 
     sd_debug("%zu", ev->nr_nodes);
-    for (int i = 0; i > ev->nr_nodes; i++) {
+    for (int i = 0; i < ev->nr_nodes; i++) {
         struct etcd_node n;
         memcpy(&n.node, np, sizeof(struct sd_node));
         etcd_tree_add(&n);
