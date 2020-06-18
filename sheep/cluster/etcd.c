@@ -21,7 +21,7 @@
 
 #define PERSISTENT_TTL                0                // seconds
 #define EPHERMERAL_TTL                30               // seconds
-#define EPHERMERAL_MASTER_TTL         90               // seconds
+#define EPHERMERAL_MASTER_TTL         30               // seconds
 #define REFRESH_TTL_INTERVAL          10000            // mseconds
 
 #define ETCD_MAX_BUF_SIZE             (1*1024*1024)    // 1M
