@@ -226,8 +226,6 @@ static int ioctl_nbd_setup(int fd, uint64_t size, uint64_t flags) {
         goto clear;
     }
 
-    ioctl(nbd_fd, NBD_DO_IT);
-
     nbd_idx = idx;
 out:
     return ret;
@@ -237,6 +235,10 @@ clear:
 close:
     close(nbd_fd);
     return ret;
+}
+
+static void wait_for_disconnect(void) {
+    ioctl(nbd_fd, NBD_DO_IT);
 }
 
 // -----------------
@@ -249,13 +251,6 @@ static int do_map(void) {
     uint64_t nbd_flags = NBD_FLAG_SEND_FLUSH | NBD_FLAG_SEND_TRIM | NBD_FLAG_HAS_FLAGS;
     int fds[2];
 
-    // daemonize
-    ret = daemon(0, 0);
-    if (ret < 0) {
-        fprintf(stderr, "error: daemon failed: %d\n", ret);
-        goto out;
-    }
-
     // unix socketpair
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == -1) {
         ret = -errno;
@@ -267,7 +262,7 @@ static int do_map(void) {
     if (!cluster) {
         ret = -1;
         fprintf(stderr, "error: failed to connect to cluster %s\n", endpoint);
-        goto out;
+        goto close;
     }
 
     // open vdi
@@ -275,7 +270,7 @@ static int do_map(void) {
     if (!cluster) {
         ret = -1;
         fprintf(stderr, "error: failed to open vdi %s\n", vdi_name);
-        goto out;
+        goto disconnect;
     }
 
     // get vdi size
@@ -285,7 +280,7 @@ static int do_map(void) {
     ret = load_nbd_module();
     if (ret < 0) {
         fprintf(stderr, "error: failed to load nbd kernel module: %d\n", ret);
-        goto out;
+        goto close_vdi;
     }
 
     if (readonly) {
@@ -296,10 +291,28 @@ static int do_map(void) {
     ret = ioctl_nbd_setup(fds[0], vdi_size, nbd_flags);
     if (ret < 0) {
         fprintf(stderr, "error: failed to setup nbd via ioctl: %d\n", ret);
-        goto out;
+        goto close_vdi;
     }
+
+    // daemonize
+    ret = daemon(0, 0);
+    if (ret < 0) {
+        fprintf(stderr, "error: daemon failed: %d\n", ret);
+        goto close_vdi;
+    }
+
+    // wait for disconnect
+    wait_for_disconnect();
+
     // start reader & writer
 
+close_vdi:
+    sd_vdi_close(vdi);
+disconnect:
+    sd_disconnect(cluster);
+close:
+    close(fds[0]);
+    close(fds[1]);
 out:
     return ret;
 }
@@ -312,19 +325,21 @@ static int do_unmap(void) {
     nbd_fd = open(dev_path, O_RDWR);
     if (nbd_fd < 0) {
         ret = -errno;
-        fprintf(stderr, "error: failed to open device: %s\n", dev_path);
+        fprintf(stderr, "error: failed to open device: %d\n", ret);
         goto out;
     }
 
     ret = ioctl(nbd_fd, NBD_DISCONNECT);
     if (ret < 0) {
-        fprintf(stderr, "error: failed to disconnect: %s\n", dev_path);
+        ret = -errno;
+        fprintf(stderr, "error: failed to disconnect: %d\n", ret);
         goto out;
     }
 
     ret = ioctl(nbd_fd, NBD_CLEAR_SOCK);
     if (ret < 0) {
-        fprintf(stderr, "error: failed to clear sock: %s\n", dev_path);
+        ret = -errno;
+        fprintf(stderr, "error: failed to clear sock: %d\n", ret);
         goto out;
     }
 
