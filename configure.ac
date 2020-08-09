@@ -152,6 +152,7 @@ AC_CONFIG_FILES([Makefile
 		dog/Makefile
 		sheep/Makefile
 		sheepfs/Makefile
+		nbd/Makefile
 		include/Makefile
 		script/Makefile
 		lib/Makefile
@@ -251,6 +252,11 @@ AC_ARG_ENABLE([livepatch],
 	[  --enable-livepatch       : enable livepatch],,
 	[ enable_livepatch="no" ],)
 AM_CONDITIONAL(BUILD_LIVEPATCH, test x$enable_livepatch = xyes)
+
+AC_ARG_ENABLE([nbd],
+	[  --enable-nbd       : enable nbd],,
+	[ enable_nbd="no" ],)
+AM_CONDITIONAL(BUILD_NBD, test x$enable_nbd = xyes)
 
 PKG_CHECK_MODULES([fuse],[fuse], HAVE_FUSE="yes", HAVE_FUSE="no")
 AC_ARG_ENABLE([sheepfs],
@@ -409,6 +415,21 @@ if test "x${enable_livepatch}" = xyes; then
 		AC_MSG_ERROR(requires elfutils-libelf-devel))
 	AC_DEFINE_UNQUOTED([HAVE_LIVEPATCH], 1, [have livepatch])
 	PACKAGE_FEATURES="$PACKAGE_FEATURES livepatch"
+fi
+
+if test "x${enable_nbd}" = xyes; then
+	AC_CHECK_LIB([nl-3], [nl_socket_alloc],,
+		AC_MSG_ERROR(libnl-3 not found))
+	AC_CHECK_LIB([nl-genl-3], [genl_connect],,
+		AC_MSG_ERROR(libnl-genl-3 not found))
+#	AC_CHECK_HEADERS([libnl3/netlink/socket.h],,
+#		AC_MSG_ERROR(socket.h header missing))
+#	AC_CHECK_HEADERS([libnl3/netlink/genl/genl.h],,
+#		AC_MSG_ERROR(genl.h header missing))
+	AC_CHECK_HEADERS([linux/nbd.h],,
+		AC_MSG_ERROR(nbd.h header missing))
+	AC_DEFINE_UNQUOTED([HAVE_NBD], 1, [have nbd])
+	PACKAGE_FEATURES="$PACKAGE_FEATURES nbd"
 fi
 
 if test "x${enable_sheepfs}" = xyes; then

@@ -21,6 +21,10 @@ if BUILD_SHEEPFS
 SUBDIRS			+= sheepfs
 endif
 
+if BUILD_NBD
+SUBDIRS			+= nbd
+endif
+
 SUBDIRS			+= man
 
 if BUILD_UNITTEST
@@ -76,6 +80,12 @@ if BUILD_SHEEPFS
 RPMBUILD_CONFIG_OPTS += --enable-sheepfs
 RPMBUILD_REQ_OPTS += fuse
 RPMBUILD_BUILD_REQ_OPTS += fuse-devel
+endif
+
+if BUILD_NBD
+RPMBUILD_CONFIG_OPTS += --enable-nbd
+RPMBUILD_REQ_OPTS += nbd
+RPMBUILD_BUILD_REQ_OPTS += libn3-devel
 endif
 
 RPMBUILDOPTS += --define "_configopts $(RPMBUILD_CONFIG_OPTS)"

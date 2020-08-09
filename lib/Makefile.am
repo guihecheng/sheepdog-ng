@@ -11,7 +11,7 @@ libsheepdog_la_DEPENDENCIES =
 libsheepdog_la_SOURCES  = shared/sheep.c shared/vdi.c shared/ops.c util.c
 
 libsheepdog_la_LDFLAGS  = -avoid-version -shared -module -export-dynamic \
-			  -export-symbols-regex 'sd_'
+			  -export-symbols-regex 'sd_' -fPIC
 # Workaround for Objects ‘created with both libtool and without’ problem
 libsheepdog_la_CPPFLAGS = $(AM_CPPFLAGS) -DNO_SHEEPDOG_LOGGER
 
