@@ -6,7 +6,7 @@ sbin_PROGRAMS = sbd-nbd
 
 sbd_nbd_SOURCES = sbd-nbd.c
 
-sbd_nbd_LDADD = -L$(top_builddir)/lib/.libs -lsheepdog -lnl-3 -lnl-genl-3
+sbd_nbd_LDADD = $(top_builddir)/lib/libsd.a -L$(top_builddir)/lib/.libs -lsheepdog -lnl-3 -lnl-genl-3
 
 all-local:
 	@echo Built sbd-nbd

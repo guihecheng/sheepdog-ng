@@ -9,8 +9,40 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <fcntl.h>
 #include <linux/nbd.h>
+#include <pthread.h>
+#include <syslog.h>
+
+typedef enum {
+    SBD_NBD_LOG_CRIT   = 1,
+    SBD_NBD_LOG_ERR    = 3,
+    SBD_NBD_LOG_WARN   = 7,
+    SBD_NBD_LOG_INFO   = 15,
+    SBD_NBD_LOG_DEBUG  = 31,
+} log_level_t;
+
+#define SYSLOG_LEVEL(level)                                              \
+        ((level == SBD_NBD_LOG_DEBUG) ? LOG_DEBUG :                      \
+         (level == SBD_NBD_LOG_INFO)  ? LOG_INFO :                       \
+         (level == SBD_NBD_LOG_WARN)  ? LOG_WARNING :                    \
+         (level == SBD_NBD_LOG_ERR)   ? LOG_ERR : LOG_CRIT)
+
+#define DoLog(level, fmt, ...)                                         \
+    do {                                                               \
+        if ((wanted_level & level) == level) {                          \
+            syslog(SYSLOG_LEVEL(level), "[%s]%s:%s(%d): " fmt "%s", "sbd-nbd", __FILE__, __func__, __LINE__, __VA_ARGS__);   \
+        }                                                              \
+    } while(0)
+
+#define LogCrit(fmt, ...)  DoLog(SBD_NBD_LOG_CRIT,  fmt, ##__VA_ARGS__, "")
+#define LogErr(fmt, ...)   DoLog(SBD_NBD_LOG_ERR,   fmt, ##__VA_ARGS__, "")
+#define LogWarn(fmt, ...)  DoLog(SBD_NBD_LOG_WARN,  fmt, ##__VA_ARGS__, "")
+#define LogInfo(fmt, ...)  DoLog(SBD_NBD_LOG_INFO,  fmt, ##__VA_ARGS__, "")
+#define LogDebug(fmt, ...) DoLog(SBD_NBD_LOG_DEBUG, fmt, ##__VA_ARGS__, "")
+
+static log_level_t wanted_level = SBD_NBD_LOG_INFO;
 
 #define SBD_NBD_BLKSIZE   512UL
 
@@ -22,6 +54,8 @@ typedef enum {
     OP_MAX,
 } operation_t;
 
+static operation_t op = OP_UNKNOWN;
+
 static int nbds_max = -1;
 static int max_part = -1;
 static char* endpoint = (char*)"127.0.0.1:7000";
@@ -29,31 +63,222 @@ static char* vdi_name = NULL;
 static char* dev_path = NULL;
 static bool readonly = false;
 static bool json = false;
+
+static uatomic_bool terminated;
+
 static int nbd_fd = -1;
 static int nbd_idx = -1;
 
-static operation_t op = OP_UNKNOWN;
+static struct sd_cluster* cluster;
+static struct sd_vdi* vdi;
+static uint64_t vdi_size;
+static uint64_t nbd_flags = NBD_FLAG_HAS_FLAGS;
+static int fds[2];
 
 // -----------------
-// nbd server struct
-// init
+// io request queue
+struct io_context {
+    struct list_node io_list;
+    struct nbd_request req;
+    struct nbd_reply   rep;
+    int cmd;
+    void* data;
+};
 
-// start
+static LIST_HEAD(io_pending);
+static LIST_HEAD(io_finished);
+static pthread_mutex_t io_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t io_cv = PTHREAD_COND_INITIALIZER;
 
-// stop
+static void io_start(struct io_context* ctx) {
+    pthread_mutex_lock(&io_mtx);
+    list_add_tail(&ctx->io_list, &io_pending);
+    pthread_mutex_unlock(&io_mtx);
+}
 
-// exit
+static void io_finish(struct io_context* ctx) {
+    pthread_mutex_lock(&io_mtx);
+    list_del(&ctx->io_list);
+    list_add_tail(&ctx->io_list, &io_finished);
+    pthread_cond_signal(&io_cv);
+    pthread_mutex_unlock(&io_mtx);
+}
+
+static struct io_context* wait_io_finish(void) {
+    pthread_mutex_lock(&io_mtx);
+    while (list_empty(&io_finished) && !uatomic_is_true(&terminated)) {
+        pthread_cond_wait(&io_cv, &io_mtx);
+    }
+
+    if (list_empty(&io_finished)) {
+        pthread_mutex_unlock(&io_mtx);
+        return NULL;
+    }
+
+    struct io_context* ctx = list_first_entry(&io_finished,
+                                              struct io_context, io_list);
+    list_del(&ctx->io_list);
+    pthread_mutex_unlock(&io_mtx);
+    return ctx;
+}
+
+static void wait_for_cleanup(void) {
+    pthread_mutex_lock(&io_mtx);
+    while (!list_empty(&io_pending)) {
+        pthread_cond_wait(&io_cv, &io_mtx);
+    }
+    while (!list_empty(&io_finished)) {
+        struct io_context* ctx = list_first_entry(&io_finished,
+                                                  struct io_context, io_list);
+        list_del(&ctx->io_list);
+        free(ctx);
+    }
+    pthread_mutex_unlock(&io_mtx);
+}
 
 // -----------------
-// io context
-// aio callback
+// reader & writer
+static void aio_done(void *opaque, int ret) {
+    struct io_context* ctx = (struct io_context*)opaque;
+
+    ctx->rep.error = htobe32(ret);
+    io_finish(ctx);
+}
+
+static void* reader_routine(void* arg) {
+    while (!uatomic_is_true(&terminated)) {
+        struct io_context* ctx = malloc(sizeof(struct io_context));
+
+        int ret = xread(fds[1], &ctx->req, sizeof(struct nbd_request));
+        if (ret < 0) {
+            LogErr("failed to read nbd request %d", ret);
+            goto out;
+        }
+
+        if (ctx->req.magic != htobe32(NBD_REQUEST_MAGIC)) {
+            LogErr("invalid request received");
+            goto out;
+        }
+
+        ctx->req.from = be64toh(ctx->req.from);
+        ctx->req.type = be32toh(ctx->req.type);
+        ctx->req.len = be32toh(ctx->req.len);
+
+        ctx->rep.magic = htobe32(NBD_REPLY_MAGIC);
+        memcpy(ctx->rep.handle, ctx->req.handle, sizeof(ctx->rep.handle));
+        ctx->cmd = ctx->req.type & 0x0000ffff;
+
+        switch (ctx->cmd) {
+            case NBD_CMD_DISC:
+                goto out;
+            case NBD_CMD_WRITE:
+                ctx->data = malloc(ctx->req.len);
+                ret = xread(fds[1], ctx->data, ctx->req.len);
+                if (ret < 0) {
+                    LogErr("failed to read data for write %d", ret);
+                    goto out;
+                }
+                break;
+            case NBD_CMD_READ:
+                // fill zero for short read
+                ctx->data = calloc(1, ctx->req.len);
+            default:
+                break;
+        }
+
+        // do sheepdog request
+        io_start(ctx);
+
+        switch (ctx->cmd) {
+            case NBD_CMD_WRITE:
+                sd_vdi_awrite(vdi, ctx->data, ctx->req.len, ctx->req.from,
+                              aio_done, ctx);
+                break;
+            case NBD_CMD_READ:
+                sd_vdi_aread(vdi, ctx->data, ctx->req.len, ctx->req.from,
+                             aio_done, ctx);
+                break;
+            default:
+                LogWarn("invalid command %d", (int)ctx->cmd);
+                break;
+        }
+    }
+out:
+    return NULL;
+}
+
+static void* writer_routine(void* arg) {
+    while (!uatomic_is_true(&terminated)) {
+        struct io_context* ctx = wait_io_finish();
+        if (!ctx) {
+            LogInfo("no more io requests");
+            goto out;
+        }
+
+        int ret = xwrite(fds[1], &ctx->rep, sizeof(struct nbd_reply));
+        if (ret < 0) {
+            LogErr("faild to write nbd reply %d", ret);
+            goto out;
+        }
+
+        if (ctx->cmd == NBD_CMD_READ && ctx->rep.error == htobe32(0)) {
+            // write data to fds[1]
+            ret = xwrite(fds[1], ctx->data, ctx->req.len);
+            if (ret < 0) {
+                LogErr("faild to write nbd data back %d", ret);
+                goto out;
+            }
+        }
+
+        // ctx completed
+        free(ctx);
+    }
+out:
+    return NULL;
+}
+
+static pthread_t reader_thread;
+static pthread_t writer_thread;
+
+static void start_reader(void) {
+    int ret;
+
+    ret = pthread_create(&reader_thread, NULL, reader_routine, NULL);
+    if (ret) {
+        LogCrit("failed to create reader thread");
+    }
+}
+
+static void join_reader(void) {
+    pthread_join(reader_thread, NULL);
+}
+
+static void start_writer(void) {
+    int ret;
+
+    ret = pthread_create(&writer_thread, NULL, writer_routine, NULL);
+    if (ret) {
+        LogCrit("failed to create reader thread");
+    }
+}
+
+static void join_writer(void) {
+    pthread_join(writer_thread, NULL);
+}
+
+static void terminate(void) {
+    if (uatomic_cmpxchg(&(&terminated)->val, 0, 1) == 0) {
+        shutdown(fds[1], SHUT_RDWR);
+
+        // notify reader
+        pthread_mutex_lock(&io_mtx);
+        pthread_cond_signal(&io_cv);
+        pthread_mutex_unlock(&io_mtx);
+    }
+}
 
 // -----------------
-// worker threads
-// process request
-
-// produce reply 
-
+// nbd setup
 static int module_load(const char* module, const char* params) {
     int ret;
     char cmd[128];
@@ -241,15 +466,18 @@ static void wait_for_disconnect(void) {
     ioctl(nbd_fd, NBD_DO_IT);
 }
 
+static void log_init(void) {
+    openlog("sbd-nbd", LOG_PID | LOG_ODELAY | LOG_NOWAIT, LOG_USER);
+}
+
+static void log_exit(void) {
+    closelog();
+}
+
 // -----------------
 // do map
 static int do_map(void) {
     int ret = 0;
-    struct sd_cluster* cluster;
-    struct sd_vdi* vdi;
-    uint64_t vdi_size;
-    uint64_t nbd_flags = NBD_FLAG_SEND_FLUSH | NBD_FLAG_SEND_TRIM | NBD_FLAG_HAS_FLAGS;
-    int fds[2];
 
     // unix socketpair
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == -1) {
@@ -301,11 +529,23 @@ static int do_map(void) {
         goto close_vdi;
     }
 
+    log_init();
+
+    // start reader & writer
+    uatomic_set_false(&terminated);
+    start_reader();
+    start_writer();
+
     // wait for disconnect
     wait_for_disconnect();
 
-    // start reader & writer
+    terminate();
 
+    join_reader();
+    join_writer();
+
+    // wait for pending io done
+    wait_for_cleanup();
 close_vdi:
     sd_vdi_close(vdi);
 disconnect:
@@ -313,6 +553,7 @@ disconnect:
 close:
     close(fds[0]);
     close(fds[1]);
+    log_exit();
 out:
     return ret;
 }
@@ -354,12 +595,6 @@ static int do_list(void) {
     int ret = 0;
     return ret;
 }
-
-// -----------------
-// ioctl setup
-
-// -----------------
-// handle signal
 
 static const char* help = 
 "Usage: sbd-nbd [options] map   <vdi>            Map an vdi to nbd device\n"
@@ -445,9 +680,6 @@ static void parse_args(int argc, char* argv[]) {
                 break;
         }
     }
-
-    printf("vdi_name: %s\n", vdi_name);
-    printf("dev_path: %s\n", dev_path);
 }
 
 int main(int argc, char* argv[]) {
