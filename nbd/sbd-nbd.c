@@ -146,6 +146,8 @@ static void aio_done(void *opaque, int ret) {
 }
 
 static void* reader_routine(void* arg) {
+    LogInfo("reader running...");
+
     while (!uatomic_is_true(&terminated)) {
         struct io_context* ctx = malloc(sizeof(struct io_context));
 
@@ -208,6 +210,8 @@ out:
 }
 
 static void* writer_routine(void* arg) {
+    LogInfo("writer running...");
+
     while (!uatomic_is_true(&terminated)) {
         struct io_context* ctx = wait_io_finish();
         if (!ctx) {
