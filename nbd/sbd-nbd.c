@@ -90,6 +90,21 @@ static LIST_HEAD(io_finished);
 static pthread_mutex_t io_mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t io_cv = PTHREAD_COND_INITIALIZER;
 
+static struct io_context* alloc_context(void) {
+    struct io_context* ctx = malloc(sizeof(struct io_context));
+
+    INIT_LIST_NODE(&ctx->io_list);
+    ctx->cmd = 0;
+    ctx->data = NULL;
+
+    return ctx;
+}
+
+static void free_context(struct io_context* ctx) {
+    free(ctx->data);
+    free(ctx);
+}
+
 static void io_start(struct io_context* ctx) {
     pthread_mutex_lock(&io_mtx);
     list_add_tail(&ctx->io_list, &io_pending);
@@ -131,7 +146,7 @@ static void wait_for_cleanup(void) {
         struct io_context* ctx = list_first_entry(&io_finished,
                                                   struct io_context, io_list);
         list_del(&ctx->io_list);
-        free(ctx);
+        free_context(ctx);
     }
     pthread_mutex_unlock(&io_mtx);
 }
@@ -149,7 +164,7 @@ static void* reader_routine(void* arg) {
     LogInfo("reader running...");
 
     while (!uatomic_is_true(&terminated)) {
-        struct io_context* ctx = malloc(sizeof(struct io_context));
+        struct io_context* ctx = alloc_context();
 
         int ret = xread(fds[1], &ctx->req, sizeof(struct nbd_request));
         if (ret < 0) {
@@ -235,7 +250,7 @@ static void* writer_routine(void* arg) {
         }
 
         // ctx completed
-        free(ctx);
+        free_context(ctx);
     }
 out:
     return NULL;
