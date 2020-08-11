@@ -390,6 +390,10 @@ static char* find_unused_device(int fd) {
             continue;
         }
 
+        // clearnup or setup will complain
+        ioctl(tmp_fd, NBD_CLEAR_SOCK);
+        close(tmp_fd);
+
         // found unused one
         return dev;
     }
