@@ -115,7 +115,7 @@ static void io_finish(struct io_context* ctx) {
     pthread_mutex_lock(&io_mtx);
     list_del(&ctx->io_list);
     list_add_tail(&ctx->io_list, &io_finished);
-    pthread_cond_signal(&io_cv);
+    pthread_cond_broadcast(&io_cv);
     pthread_mutex_unlock(&io_mtx);
 }
 
@@ -291,7 +291,7 @@ static void terminate(void) {
 
         // notify requester
         pthread_mutex_lock(&io_mtx);
-        pthread_cond_signal(&io_cv);
+        pthread_cond_broadcast(&io_cv);
         pthread_mutex_unlock(&io_mtx);
     }
 }
@@ -316,7 +316,7 @@ static int load_nbd_module(void) {
     char params[64] = {0,};
 
     if (!access("sys/module/nbd", F_OK)) {
-        fprintf(stderr, "warning: nbd already loaded, parameters ignored");
+        LogWarn("nbd already loaded, parameters ignored");
         return ret;
     }
 
@@ -423,13 +423,13 @@ static int ioctl_nbd_setup(int fd, uint64_t size, uint64_t flags) {
 
     if (!dev_path) {
         ret = -1;
-        fprintf(stderr, "error: no unused device available\n");
+        LogErr("no unused device available");
         goto out;
     }
 
     ret = parse_nbd_index(dev_path);
     if (ret < 0) {
-        fprintf(stderr, "error: invalid device path: %s\n", dev_path);
+        LogErr("invalid device path: %s", dev_path);
         goto out;
     }
 
@@ -438,35 +438,35 @@ static int ioctl_nbd_setup(int fd, uint64_t size, uint64_t flags) {
     nbd_fd = open(dev_path, O_RDWR);
     if (nbd_fd < 0) {
         ret = -errno;
-        fprintf(stderr, "error: faild to open device: %s\n", dev_path);
+        LogErr("faild to open device: %s", dev_path);
         goto out;
     }
 
     ret = ioctl(nbd_fd, NBD_SET_SOCK, fd);
     if (ret < 0) {
         ret = -errno;
-        fprintf(stderr, "error: failed to set sock: %s\n", dev_path);
+        LogErr("failed to set sock: %s", dev_path);
         goto close;
     }
 
     ret = ioctl(nbd_fd, NBD_SET_BLKSIZE, SBD_NBD_BLKSIZE);
     if (ret < 0) {
         ret = -errno;
-        fprintf(stderr, "error: failed to set block size: %s\n", dev_path);
+        LogErr("failed to set block size: %s", dev_path);
         goto clear;
     }
 
     ret = ioctl(nbd_fd, NBD_SET_SIZE, size);
     if (ret < 0) {
         ret = -errno;
-        fprintf(stderr, "error: failed to set size: %s\n", dev_path);
+        LogErr("failed to set size: %s", dev_path);
         goto clear;
     }
 
     ret = ioctl(nbd_fd, NBD_SET_FLAGS, flags);
     if (ret < 0) {
         ret = -errno;
-        fprintf(stderr, "error: failed to set flags: %s\n", dev_path);
+        LogErr("failed to set flags: %s", dev_path);
         goto clear;
     }
 
@@ -498,9 +498,19 @@ static void log_exit(void) {
 static int do_map(void) {
     int ret = 0;
 
+    // daemonize
+    ret = daemon(0, 0);
+    if (ret < 0) {
+        fprintf(stderr, "error: daemon failed: %d\n", ret);
+        goto close_vdi;
+    }
+
+    log_init();
+
     // unix socketpair
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == -1) {
         ret = -errno;
+        LogErr("failed to socketpair %d", ret);
         goto out;
     }
 
@@ -508,7 +518,7 @@ static int do_map(void) {
     cluster = sd_connect(endpoint);
     if (!cluster) {
         ret = -1;
-        fprintf(stderr, "error: failed to connect to cluster %s\n", endpoint);
+        LogErr("failed to connect to cluster %s", endpoint);
         goto close;
     }
 
@@ -516,7 +526,7 @@ static int do_map(void) {
     vdi = sd_vdi_open(cluster, vdi_name, NULL);
     if (!cluster) {
         ret = -1;
-        fprintf(stderr, "error: failed to open vdi %s\n", vdi_name);
+        LogErr("failed to open vdi %s", vdi_name);
         goto disconnect;
     }
 
@@ -526,7 +536,7 @@ static int do_map(void) {
     // load nbd module
     ret = load_nbd_module();
     if (ret < 0) {
-        fprintf(stderr, "error: failed to load nbd kernel module: %d\n", ret);
+        LogErr("failed to load nbd kernel module: %d", ret);
         goto close_vdi;
     }
 
@@ -537,18 +547,9 @@ static int do_map(void) {
     // nbd setup
     ret = ioctl_nbd_setup(fds[0], vdi_size, nbd_flags);
     if (ret < 0) {
-        fprintf(stderr, "error: failed to setup nbd via ioctl: %d\n", ret);
+        LogErr("failed to setup nbd via ioctl: %d", ret);
         goto close_vdi;
     }
-
-    // daemonize
-    ret = daemon(0, 0);
-    if (ret < 0) {
-        fprintf(stderr, "error: daemon failed: %d\n", ret);
-        goto close_vdi;
-    }
-
-    log_init();
 
     // start requester & replyer
     uatomic_set_false(&terminated);
