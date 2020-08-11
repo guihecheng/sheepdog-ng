@@ -152,7 +152,7 @@ static void wait_for_cleanup(void) {
 }
 
 // -----------------
-// reader & writer
+// requester & replyer
 static void aio_done(void *opaque, int ret) {
     struct io_context* ctx = (struct io_context*)opaque;
 
@@ -160,8 +160,8 @@ static void aio_done(void *opaque, int ret) {
     io_finish(ctx);
 }
 
-static void* reader_routine(void* arg) {
-    LogInfo("reader running...");
+static void* requester_routine(void* arg) {
+    LogInfo("requester running...");
 
     while (!uatomic_is_true(&terminated)) {
         struct io_context* ctx = alloc_context();
@@ -224,8 +224,8 @@ out:
     return NULL;
 }
 
-static void* writer_routine(void* arg) {
-    LogInfo("writer running...");
+static void* replyer_routine(void* arg) {
+    LogInfo("replyer running...");
 
     while (!uatomic_is_true(&terminated)) {
         struct io_context* ctx = wait_io_finish();
@@ -256,40 +256,40 @@ out:
     return NULL;
 }
 
-static pthread_t reader_thread;
-static pthread_t writer_thread;
+static pthread_t requester_thread;
+static pthread_t replyer_thread;
 
-static void start_reader(void) {
+static void start_requester(void) {
     int ret;
 
-    ret = pthread_create(&reader_thread, NULL, reader_routine, NULL);
+    ret = pthread_create(&requester_thread, NULL, requester_routine, NULL);
     if (ret) {
-        LogCrit("failed to create reader thread");
+        LogCrit("failed to create requester thread");
     }
 }
 
-static void join_reader(void) {
-    pthread_join(reader_thread, NULL);
+static void join_requester(void) {
+    pthread_join(requester_thread, NULL);
 }
 
-static void start_writer(void) {
+static void start_replyer(void) {
     int ret;
 
-    ret = pthread_create(&writer_thread, NULL, writer_routine, NULL);
+    ret = pthread_create(&replyer_thread, NULL, replyer_routine, NULL);
     if (ret) {
-        LogCrit("failed to create reader thread");
+        LogCrit("failed to create requester thread");
     }
 }
 
-static void join_writer(void) {
-    pthread_join(writer_thread, NULL);
+static void join_replyer(void) {
+    pthread_join(replyer_thread, NULL);
 }
 
 static void terminate(void) {
     if (uatomic_cmpxchg(&(&terminated)->val, 0, 1) == 0) {
         shutdown(fds[1], SHUT_RDWR);
 
-        // notify reader
+        // notify requester
         pthread_mutex_lock(&io_mtx);
         pthread_cond_signal(&io_cv);
         pthread_mutex_unlock(&io_mtx);
@@ -550,18 +550,18 @@ static int do_map(void) {
 
     log_init();
 
-    // start reader & writer
+    // start requester & replyer
     uatomic_set_false(&terminated);
-    start_reader();
-    start_writer();
+    start_requester();
+    start_replyer();
 
     // wait for disconnect
     wait_for_disconnect();
 
     terminate();
 
-    join_reader();
-    join_writer();
+    join_requester();
+    join_replyer();
 
     // wait for pending io done
     wait_for_cleanup();
