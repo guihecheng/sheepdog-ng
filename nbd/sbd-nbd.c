@@ -160,6 +160,17 @@ static void aio_done(void *opaque, int ret) {
     io_finish(ctx);
 }
 
+static void terminate(void) {
+    if (uatomic_cmpxchg(&(&terminated)->val, 0, 1) == 0) {
+        shutdown(fds[1], SHUT_RDWR);
+
+        // notify requester
+        pthread_mutex_lock(&io_mtx);
+        pthread_cond_broadcast(&io_cv);
+        pthread_mutex_unlock(&io_mtx);
+    }
+}
+
 static void* requester_routine(void* arg) {
     LogInfo("requester running...");
 
@@ -187,6 +198,7 @@ static void* requester_routine(void* arg) {
 
         switch (ctx->cmd) {
             case NBD_CMD_DISC:
+                LogInfo("disconnect command received");
                 goto out;
             case NBD_CMD_WRITE:
                 ctx->data = malloc(ctx->req.len);
@@ -221,6 +233,8 @@ static void* requester_routine(void* arg) {
         }
     }
 out:
+    LogInfo("requester terminating...");
+    terminate();
     return NULL;
 }
 
@@ -253,6 +267,7 @@ static void* replyer_routine(void* arg) {
         free_context(ctx);
     }
 out:
+    LogInfo("replyer terminating...");
     return NULL;
 }
 
@@ -285,16 +300,6 @@ static void join_replyer(void) {
     pthread_join(replyer_thread, NULL);
 }
 
-static void terminate(void) {
-    if (uatomic_cmpxchg(&(&terminated)->val, 0, 1) == 0) {
-        shutdown(fds[1], SHUT_RDWR);
-
-        // notify requester
-        pthread_mutex_lock(&io_mtx);
-        pthread_cond_broadcast(&io_cv);
-        pthread_mutex_unlock(&io_mtx);
-    }
-}
 
 // -----------------
 // nbd setup
@@ -560,10 +565,8 @@ static int do_map(void) {
     start_requester();
     start_replyer();
 
-    // wait for disconnect
+    // block waiting...
     wait_for_disconnect();
-
-    terminate();
 
     join_requester();
     join_replyer();
