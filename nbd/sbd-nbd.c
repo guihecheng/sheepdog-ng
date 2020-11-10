@@ -12,6 +12,7 @@
 #include <sys/socket.h>
 #include <fcntl.h>
 #include <linux/nbd.h>
+#include <linux/limits.h>
 #include <pthread.h>
 #include <syslog.h>
 
@@ -45,6 +46,8 @@ typedef enum {
 static log_level_t wanted_level = SBD_NBD_LOG_INFO;
 
 #define SBD_NBD_BLKSIZE   512UL
+
+static const char* bound_path = "/sys/module/nbd/parameters/nbds_max";
 
 typedef enum {
     OP_MAP,
@@ -340,7 +343,7 @@ static int load_nbd_module(void) {
     return module_load("nbd", params);
 }
 
-static char* read_sys_param(const char* path) {
+static char* read_sys_param(const char* path, int size) {
     char* val = NULL;
     int fd;
     int ret;
@@ -350,8 +353,8 @@ static char* read_sys_param(const char* path) {
         goto out;
     }
 
-    val = malloc(sizeof(char)*32);
-    ret = read(fd, val, 32);
+    val = malloc(sizeof(char)*size);
+    ret = xread(fd, val, size);
     if (ret <= 0) {
         free(val);
         val = NULL;
@@ -367,12 +370,11 @@ out:
 static char* find_unused_device(int fd) {
     int ret;
     char* dev = NULL;
-    const char* bound_path = "/sys/module/nbd/parameters/nbds_max";
     int bound = -1;
     int tmp_fd;
 
     if (!access(bound_path, F_OK)) {
-        bound = atoi(read_sys_param(bound_path));
+        bound = atoi(read_sys_param(bound_path, 32));
     }
 
     if (bound == -1) {
@@ -616,14 +618,91 @@ out:
     return ret;
 }
 
+static void print_head_line(void) {
+    printf("VDI                  Device   \n");
+    printf("-------------------------------\n");
+}
+
+static void print_map_line(char* name, int i) {
+    printf("%s              /dev/nbd%d\n", name, i);
+}
+
+static char* extract_vdi_name(char* path) {
+    char* line = NULL;
+    char* name = NULL;
+    FILE* fp;
+    size_t len = 0;
+    int i = 0;
+
+    fp = fopen(path, "r");
+    if (!fp) {
+        return NULL;
+    }
+
+    while (getdelim(&line, &len, 0, fp) != -1) {
+        if (i == 0) {
+            if (!strstr(line, "sbd-nbd")) {
+                break;
+            }
+        }
+        if (i == 2) {
+            name = strdup(line);
+            break;
+        }
+        i++;
+    }
+
+    fclose(fp);
+
+    return name;
+}
+
 // -----------------
 // do list
 static int do_list(void) {
     int ret = 0;
+    char path[PATH_MAX];
+    char* pidstr = NULL;
+    char* name = NULL;
+    int cnt = 0;
+    int max_devs;
+
+    max_devs = atoi(read_sys_param(bound_path, 32));
+
+    for (int i = 0; i < max_devs; i++) {
+        snprintf(path, PATH_MAX, "/sys/block/nbd%d", i);
+        if (access(path, F_OK)) {
+            continue;
+        }
+
+        strcat(path, "/pid");
+        pidstr = read_sys_param(path, 32);
+        if (!pidstr) {
+            continue;
+        }
+        int pid = atoi(pidstr);
+
+        snprintf(path, PATH_MAX, "/proc/%d/cmdline", pid);
+        name = extract_vdi_name(path);
+        if (!name) {
+            continue;
+        }
+
+        if (cnt++ == 0) {
+            print_head_line();
+        }
+        print_map_line(name, i);
+
+        free(pidstr), pidstr = NULL;
+        free(name), name = NULL;
+    }
+
+    free(pidstr);
+    free(name);
     return ret;
 }
 
-static const char* help = 
+static const char* help =
 "Usage: sbd-nbd [options] map   <vdi>            Map an vdi to nbd device\n"
 "                         unmap <device>         Unmap nbd device\n"
 "               [options] list                   List mapped nbd devices\n"
